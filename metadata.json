@@ -1,0 +1,11 @@
+{
+  "name": "SARA",
+  "description": "Futuristic JARVIS-inspired continuous AI voice assistant powered by Gemini and ElevenLabs with modular memory, vision, and Android action capabilities.",
+  "requestFramePermissions": [
+    "RECORD_AUDIO",
+    "CAMERA"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

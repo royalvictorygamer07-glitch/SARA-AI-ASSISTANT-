@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">SARA</string>
+    <string name="sara_subtitle">SMART ADAPTIVE RESPONSE ASSISTANT</string>
+    <string name="status_idle">IDLE</string>
+    <string name="status_listening">LISTENING</string>
+    <string name="status_thinking">THINKING</string>
+    <string name="status_speaking">SPEAKING</string>
+    <string name="status_live_call">LIVE CALL</string>
+    <string name="err_gemini_failed">Sir, Gemini se response nahi aa raha.</string>
+    <string name="err_elevenlabs_failed">Sir, voice service temporarily unavailable hai.</string>
+    <string name="err_mic_denied">Microphone permission required hai.</string>
+    <string name="err_internet_unavailable">Internet connection check kijiye.</string>
+    <string name="err_camera_denied">Camera permission required hai.</string>
+    <string name="err_contacts_denied">Contacts permission required hai.</string>
+    <string name="nav_assistant">Core</string>
+    <string name="nav_vision">Vision</string>
+    <string name="nav_memory">Memory</string>
+    <string name="nav_actions">Actions</string>
+    <string name="nav_settings">Settings</string>
+    <string name="whatsapp_notification_listener_label">SARA WhatsApp Automation Listener</string>
+</resources>
