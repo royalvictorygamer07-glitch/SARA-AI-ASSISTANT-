@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -182,13 +183,14 @@ fun SaraRootApp(viewModel: SaraViewModel) {
                         context,
                         Manifest.permission.RECORD_AUDIO
                     ) == PackageManager.PERMISSION_GRANTED
+                    viewModel.onAppForegrounded()
                     viewModel.refreshBatteryOptimizationStatus()
                     viewModel.refreshCommandPermissions()
                 }
                 Lifecycle.Event.ON_STOP -> {
                     val changingConfig = (context as? Activity)?.isChangingConfigurations == true
                     if (!changingConfig) {
-                        viewModel.endConversationSession()
+                        viewModel.onAppBackgrounded()
                     }
                 }
                 else -> Unit
@@ -365,6 +367,18 @@ fun SaraRootApp(viewModel: SaraViewModel) {
                                 },
                                 onEndSessionClick = { viewModel.endConversationSession() },
                                 onInterruptClick = { viewModel.interruptSpeechAndListen() },
+                                onSleepClick = { viewModel.enterSleepMode() },
+                                onWakeClick = { viewModel.wakeUpFromSleep() },
+                                onOpenOverlayPermission = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                        )
+                                    }
+                                },
                                 onNewChatClick = { viewModel.startNewConversationSession() },
                                 onSendText = { viewModel.sendTextCommand(it) },
                                 onToggleGeminiLive = { viewModel.setGeminiLiveEnabled(it) },
@@ -458,6 +472,17 @@ fun SaraRootApp(viewModel: SaraViewModel) {
                                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                     } else {
                                         viewModel.setWakeUpDetectionEnabled(enabled, hasMicPermission)
+                                    }
+                                },
+                                onToggleBackgroundAssistant = { viewModel.setBackgroundAssistantEnabled(it) },
+                                onOpenOverlayPermissionSettings = {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                        )
                                     }
                                 },
                                 onImportVoskModelClick = { voskFolderPickerLauncher.launch(null) },

@@ -121,7 +121,7 @@ class RestGeminiClient(
                 JSONObject().apply {
                     put("responseMimeType", "application/json")
                     put("temperature", if (liveCallMode) 0.55 else 0.7)
-                    put("maxOutputTokens", if (liveCallMode) 260 else 600)
+                    put("maxOutputTokens", if (liveCallMode) 768 else 1200)
                 }
             )
         }
@@ -192,7 +192,7 @@ class RestGeminiClient(
                 "generationConfig",
                 JSONObject().apply {
                     put("temperature", 0.4)
-                    put("maxOutputTokens", 500)
+                    put("maxOutputTokens", 1024)
                 }
             )
         }
@@ -209,7 +209,7 @@ class RestGeminiClient(
             if (!networkMonitor.isOnline()) {
                 return@withContext Result.failure(IOException("Internet connection check kijiye."))
             }
-            val model = modelName.trim().ifBlank { "gemini-2.5-flash" }
+            val model = com.example.core.security.GeminiCredentials.normalizeStandardModel(modelName)
             val payload = JSONObject().apply {
                 put(
                     "contents",
@@ -220,7 +220,7 @@ class RestGeminiClient(
                         }
                     )
                 )
-                put("generationConfig", JSONObject().put("maxOutputTokens", 16))
+                put("generationConfig", JSONObject().put("maxOutputTokens", 256))
             }
 
             when (val result = executeGenerateContent(cleanKey, model, payload, parseAsCommand = false)) {
@@ -235,67 +235,107 @@ class RestGeminiClient(
         payload: JSONObject,
         parseAsCommand: Boolean
     ): GeminiResult {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("x-goog-api-key", apiKey)
-            .addHeader("Content-Type", "application/json")
-            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        val candidateModels = buildModelFallbackChain(modelName)
+        var lastFailure: GeminiResult.Failure? = null
 
-        return try {
-            withTimeout(45_000L) {
-                httpClient.newCall(request).execute().use { response ->
-                    val bodyString = response.body?.string().orEmpty()
-                    if (!response.isSuccessful) {
-                        val apiMessage = extractGoogleErrorMessage(bodyString)
-                        Log.e(TAG, "Gemini HTTP ${response.code}: $apiMessage")
-                        val isAuthErr = response.code == 400 && apiMessage.contains("API key", ignoreCase = true) ||
-                            response.code == 401 || response.code == 403
-                        val diagnostic = when {
-                            isAuthErr -> "Invalid Gemini API key (HTTP ${response.code})"
-                            response.code == 429 -> "Gemini quota/rate limit reached (HTTP 429)"
-                            else -> "Gemini HTTP ${response.code}: $apiMessage"
+        for (candidateModel in candidateModels) {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$candidateModel:generateContent"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("x-goog-api-key", apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            try {
+                val outcome = withTimeout(45_000L) {
+                    httpClient.newCall(request).execute().use { response ->
+                        val bodyString = response.body?.string().orEmpty()
+                        if (!response.isSuccessful) {
+                            val apiMessage = extractGoogleErrorMessage(bodyString)
+                            Log.e(TAG, "Gemini HTTP ${response.code} ($candidateModel): $apiMessage")
+                            val isAuthErr = response.code == 400 && apiMessage.contains("API key", ignoreCase = true) ||
+                                response.code == 401 || response.code == 403
+                            val diagnostic = when {
+                                isAuthErr -> "Invalid Gemini API key (HTTP ${response.code})"
+                                response.code == 429 -> "Gemini quota/rate limit reached (HTTP 429)"
+                                else -> "Gemini HTTP ${response.code}: $apiMessage"
+                            }
+                            return@withTimeout GeminiOutcomeOrRetry(
+                                result = GeminiResult.Failure(
+                                    userFacingMessage = "Sir, Gemini se response nahi aa raha.",
+                                    diagnostic = diagnostic,
+                                    isInvalidKey = isAuthErr
+                                ),
+                                shouldTryFallbackModel = response.code == 404
+                            )
                         }
-                        return@withTimeout GeminiResult.Failure(
-                            userFacingMessage = "Sir, Gemini se response nahi aa raha.",
-                            diagnostic = diagnostic,
-                            isInvalidKey = isAuthErr
-                        )
-                    }
 
-                    val text = extractCandidateText(bodyString)
-                    if (text.isNullOrBlank()) {
-                        return@withTimeout GeminiResult.Failure(
-                            userFacingMessage = "Sir, Gemini se response nahi aa raha.",
-                            diagnostic = "Empty candidate response from Gemini"
-                        )
-                    }
+                        val text = extractCandidateText(bodyString)
+                        if (text.isNullOrBlank()) {
+                            return@withTimeout GeminiOutcomeOrRetry(
+                                result = GeminiResult.Failure(
+                                    userFacingMessage = "Sir, Gemini se response nahi aa raha.",
+                                    diagnostic = "Empty candidate response from Gemini"
+                                ),
+                                shouldTryFallbackModel = false
+                            )
+                        }
 
-                    val command = if (parseAsCommand) {
-                        CommandParser.parseModelOutput(text)
-                    } else {
-                        com.example.commands.AssistantCommand(
-                            category = com.example.commands.ActionCategory.IMAGE_ANALYSIS,
-                            spokenReply = text.trim()
+                        val command = if (parseAsCommand) {
+                            CommandParser.parseModelOutput(text)
+                        } else {
+                            com.example.commands.AssistantCommand(
+                                category = com.example.commands.ActionCategory.IMAGE_ANALYSIS,
+                                spokenReply = text.trim()
+                            )
+                        }
+                        GeminiOutcomeOrRetry(
+                            result = GeminiResult.Success(command = command, rawText = text),
+                            shouldTryFallbackModel = false
                         )
                     }
-                    GeminiResult.Success(command = command, rawText = text)
                 }
+
+                when (val r = outcome.result) {
+                    is GeminiResult.Success -> return r
+                    is GeminiResult.Failure -> {
+                        lastFailure = r
+                        if (!outcome.shouldTryFallbackModel) return r
+                    }
+                }
+            } catch (e: IOException) {
+                Log.e(TAG, "Gemini network failure", e)
+                return GeminiResult.Failure(
+                    userFacingMessage = "Sir, Gemini se response nahi aa raha.",
+                    diagnostic = "Network error: ${e.localizedMessage ?: "unreachable"}"
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Gemini unexpected failure", e)
+                return GeminiResult.Failure(
+                    userFacingMessage = "Sir, Gemini se response nahi aa raha.",
+                    diagnostic = e.localizedMessage ?: "Unexpected Gemini failure"
+                )
             }
-        } catch (e: IOException) {
-            Log.e(TAG, "Gemini network failure", e)
-            GeminiResult.Failure(
-                userFacingMessage = "Sir, Gemini se response nahi aa raha.",
-                diagnostic = "Network error: ${e.localizedMessage ?: "unreachable"}"
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Gemini unexpected failure", e)
-            GeminiResult.Failure(
-                userFacingMessage = "Sir, Gemini se response nahi aa raha.",
-                diagnostic = e.localizedMessage ?: "Unexpected Gemini failure"
-            )
         }
+        return lastFailure ?: GeminiResult.Failure(
+            userFacingMessage = "Sir, Gemini se response nahi aa raha.",
+            diagnostic = "No compatible Gemini model responded"
+        )
+    }
+
+    private data class GeminiOutcomeOrRetry(
+        val result: GeminiResult,
+        val shouldTryFallbackModel: Boolean
+    )
+
+    private fun buildModelFallbackChain(requestedModel: String): List<String> {
+        val primary = com.example.core.security.GeminiCredentials.normalizeStandardModel(requestedModel)
+        return listOf(
+            primary,
+            com.example.core.security.GeminiCredentials.DEFAULT_GEMINI_MODEL,
+            com.example.core.security.GeminiCredentials.FALLBACK_GEMINI_MODEL
+        ).distinct()
     }
 
     private fun extractCandidateText(bodyString: String): String? {
@@ -305,12 +345,19 @@ class RestGeminiClient(
             if (candidates.length() == 0) return null
             val content = candidates.getJSONObject(0).optJSONObject("content") ?: return null
             val parts = content.optJSONArray("parts") ?: return null
-            val sb = StringBuilder()
+            val regularSb = StringBuilder()
+            val anySb = StringBuilder()
             for (i in 0 until parts.length()) {
-                val partText = parts.getJSONObject(i).optString("text", "")
-                if (partText.isNotEmpty()) sb.append(partText)
+                val partObj = parts.optJSONObject(i) ?: continue
+                val partText = partObj.optString("text", "")
+                if (partText.isNotEmpty()) {
+                    anySb.append(partText)
+                    if (!partObj.optBoolean("thought", false)) {
+                        regularSb.append(partText)
+                    }
+                }
             }
-            sb.toString().ifBlank { null }
+            regularSb.toString().ifBlank { anySb.toString() }.ifBlank { null }
         }.getOrNull()
     }
 

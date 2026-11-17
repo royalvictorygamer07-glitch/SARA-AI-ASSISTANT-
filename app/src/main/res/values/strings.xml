@@ -5,6 +5,7 @@
     <string name="status_listening">LISTENING</string>
     <string name="status_thinking">THINKING</string>
     <string name="status_speaking">SPEAKING</string>
+    <string name="status_sleeping">SLEEPING</string>
     <string name="status_live_call">LIVE CALL</string>
     <string name="err_gemini_failed">Sir, Gemini se response nahi aa raha.</string>
     <string name="err_elevenlabs_failed">Sir, voice service temporarily unavailable hai.</string>

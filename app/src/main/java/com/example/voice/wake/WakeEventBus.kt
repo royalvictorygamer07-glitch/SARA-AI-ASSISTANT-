@@ -13,9 +13,17 @@ enum class WakeServiceState {
     PERMISSION_MISSING,
     STARTING,
     LISTENING,
+    SLEEPING,
+    ONLINE_BACKGROUND,
     PAUSED_FOR_SESSION,
     WAKE_TRIGGERED,
     ERROR
+}
+
+enum class SaraPowerMode {
+    OFF,
+    ONLINE,
+    SLEEP
 }
 
 data class WakePopupUiState(
@@ -32,7 +40,8 @@ data class WakeTriggerEvent(
 )
 
 /**
- * Shared reactive state bus synchronizing WakeDetectionService, MainActivity, and SaraViewModel.
+ * Shared reactive state bus synchronizing WakeDetectionService, SaraVoiceCoordinator,
+ * MainActivity, and SaraViewModel.
  */
 class WakeEventBus {
 
@@ -41,6 +50,9 @@ class WakeEventBus {
 
     private val _serviceDiagnostic = MutableStateFlow<String?>(null)
     val serviceDiagnostic: StateFlow<String?> = _serviceDiagnostic.asStateFlow()
+
+    private val _powerMode = MutableStateFlow(SaraPowerMode.OFF)
+    val powerMode: StateFlow<SaraPowerMode> = _powerMode.asStateFlow()
 
     private val _wakeTriggers = MutableSharedFlow<WakeTriggerEvent>(extraBufferCapacity = 8)
     val wakeTriggers: SharedFlow<WakeTriggerEvent> = _wakeTriggers.asSharedFlow()
@@ -51,6 +63,10 @@ class WakeEventBus {
     fun updateServiceState(state: WakeServiceState, diagnostic: String? = null) {
         _serviceState.value = state
         _serviceDiagnostic.value = diagnostic
+    }
+
+    fun updatePowerMode(mode: SaraPowerMode) {
+        _powerMode.value = mode
     }
 
     fun emitWakeTrigger(phrase: String) {

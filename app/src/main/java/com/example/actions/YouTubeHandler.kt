@@ -15,12 +15,7 @@ class YouTubeHandler(private val context: Context) {
             val launch = context.packageManager.getLaunchIntentForPackage(YOUTUBE_PACKAGE)
                 ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             return if (launch != null) {
-                runCatching {
-                    context.startActivity(launch)
-                    ActionExecutionResult.Executed("Opened YouTube")
-                }.getOrElse {
-                    ActionExecutionResult.Unavailable("Could not open YouTube")
-                }
+                launchWithFallback(launch, "Opened YouTube")
             } else {
                 openWebFallback("https://www.youtube.com", "Opened YouTube in browser")
             }
@@ -34,15 +29,8 @@ class YouTubeHandler(private val context: Context) {
 
         val canLaunchApp = ytSearchIntent.resolveActivity(context.packageManager) != null
         if (canLaunchApp) {
-            return runCatching {
-                context.startActivity(ytSearchIntent)
-                ActionExecutionResult.Executed("Searching YouTube for \"$searchQuery\"")
-            }.getOrElse {
-                openWebFallback(
-                    "https://www.youtube.com/results?search_query=${Uri.encode(searchQuery)}",
-                    "Searching YouTube for \"$searchQuery\""
-                )
-            }
+            val direct = launchWithFallback(ytSearchIntent, "Searching YouTube for \"$searchQuery\"")
+            if (direct is ActionExecutionResult.Executed) return direct
         }
 
         return openWebFallback(
@@ -54,11 +42,19 @@ class YouTubeHandler(private val context: Context) {
     private fun openWebFallback(url: String, successMsg: String): ActionExecutionResult {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return runCatching {
-            context.startActivity(intent)
-            ActionExecutionResult.Executed(successMsg)
-        }.getOrElse {
-            ActionExecutionResult.Unavailable("No app available to open YouTube.")
+        return launchWithFallback(intent, successMsg)
+    }
+
+    private fun launchWithFallback(intent: Intent, successMsg: String): ActionExecutionResult {
+        return when (val outcome = BackgroundActivityStarter.launchActivity(context, intent, successMsg)) {
+            BackgroundActivityStarter.LaunchOutcome.LaunchedDirectly ->
+                ActionExecutionResult.Executed(successMsg)
+            BackgroundActivityStarter.LaunchOutcome.NotificationFallbackPosted ->
+                ActionExecutionResult.Executed(
+                    "$successMsg (Tap notification or grant Display Over Other Apps in Settings)"
+                )
+            is BackgroundActivityStarter.LaunchOutcome.Failed ->
+                ActionExecutionResult.Unavailable(outcome.reason)
         }
     }
 

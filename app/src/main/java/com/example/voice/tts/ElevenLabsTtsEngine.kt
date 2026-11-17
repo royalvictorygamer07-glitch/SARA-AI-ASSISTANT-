@@ -59,6 +59,15 @@ class ElevenLabsTtsEngine(
     @Volatile
     private var stopRequested = false
 
+    private val systemTtsSpeaker = SystemTtsSpeaker(
+        context = appContext,
+        audioFocusManager = audioFocusManager,
+        onSpeakingStateChanged = { speaking, amp ->
+            _isSpeaking.value = speaking
+            _playbackAmplitude.value = amp
+        }
+    )
+
     override suspend fun speak(text: String, liveCallMode: Boolean): TtsResult {
         val cleanText = text.trim()
         if (cleanText.isEmpty()) return TtsResult.Completed
@@ -66,19 +75,9 @@ class ElevenLabsTtsEngine(
         stop()
         stopRequested = false
 
-        if (!networkMonitor.isOnline()) {
-            return TtsResult.Error(
-                userMessage = "Sir, voice service temporarily unavailable hai.",
-                diagnostic = "Offline: cannot reach ElevenLabs TTS"
-            )
-        }
-
         val creds = credentialStore.elevenLabsCredentials.value
-        if (!creds.isConfigured) {
-            return TtsResult.Error(
-                userMessage = "Sir, voice service temporarily unavailable hai.",
-                diagnostic = "ElevenLabs API key or Voice ID not configured in Settings"
-            )
+        if (!networkMonitor.isOnline() || !creds.isConfigured) {
+            return systemTtsSpeaker.speak(cleanText, liveCallMode)
         }
 
         val audioFile = withContext(Dispatchers.IO) {
@@ -95,11 +94,8 @@ class ElevenLabsTtsEngine(
             return TtsResult.Stopped
         }
 
-        val file = audioFile.getOrElse { err ->
-            return TtsResult.Error(
-                userMessage = "Sir, voice service temporarily unavailable hai.",
-                diagnostic = err.message ?: "ElevenLabs synthesis failed"
-            )
+        val file = audioFile.getOrElse {
+            return systemTtsSpeaker.speak(cleanText, liveCallMode)
         }
 
         return try {
@@ -301,11 +297,13 @@ class ElevenLabsTtsEngine(
 
     override fun stop() {
         stopRequested = true
+        systemTtsSpeaker.stop()
         cleanupPlayer()
     }
 
     override fun release() {
         stop()
+        systemTtsSpeaker.release()
         amplitudeJob?.cancel()
     }
 

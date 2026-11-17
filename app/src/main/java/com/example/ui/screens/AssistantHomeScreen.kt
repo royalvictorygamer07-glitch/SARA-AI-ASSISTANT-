@@ -80,6 +80,7 @@ import com.example.ui.components.VoiceWaveformStrip
 import com.example.ui.theme.AmberThinking
 import com.example.ui.theme.CrimsonAlert
 import com.example.ui.theme.CyanPlasma
+import com.example.voice.wake.SaraPowerMode
 import com.example.ui.theme.EmeraldActive
 import com.example.ui.theme.HudBorder
 import com.example.ui.theme.HudBorderBright
@@ -98,6 +99,9 @@ fun AssistantHomeScreen(
     onMicClick: () -> Unit,
     onEndSessionClick: () -> Unit,
     onInterruptClick: () -> Unit,
+    onSleepClick: () -> Unit,
+    onWakeClick: () -> Unit,
+    onOpenOverlayPermission: () -> Unit,
     onNewChatClick: () -> Unit,
     onSendText: (String) -> Unit,
     onToggleGeminiLive: (Boolean) -> Unit,
@@ -283,6 +287,42 @@ fun AssistantHomeScreen(
                 }
             }
 
+            AnimatedVisibility(
+                visible = uiState.behaviorSettings.backgroundAssistantEnabled &&
+                    !uiState.commandPermissions.canDrawOverlays &&
+                    uiState.geminiCredentials.isConfigured
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = SapphirePulse.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, SapphirePulse.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .testTag("overlay_prompt_banner"),
+                    onClick = onOpenOverlayPermission
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.AutoAwesome,
+                            contentDescription = null,
+                            tint = CyanPlasma,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Tap to allow 'Display over other apps' so Sara can open apps from background",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
             AnimatedVisibility(visible = uiState.statusBannerMessage != null) {
                 val msg = uiState.statusBannerMessage.orEmpty()
                 Surface(
@@ -453,7 +493,7 @@ fun AssistantHomeScreen(
 
                     Spacer(modifier = Modifier.width(14.dp))
 
-                    // Interrupt while speaking OR Mode Pill
+                    // Interrupt while speaking OR Sleep/Wake Power Mode Pill
                     if (uiState.status == AssistantStatus.SPEAKING) {
                         FilledTonalButton(
                             onClick = onInterruptClick,
@@ -470,30 +510,72 @@ fun AssistantHomeScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("INTERRUPT", style = MaterialTheme.typography.labelSmall)
                         }
-                    } else {
+                    } else if (uiState.powerMode == SaraPowerMode.SLEEP || uiState.status == AssistantStatus.SLEEPING) {
                         Surface(
                             shape = MaterialTheme.shapes.small,
-                            color = HudCardSurface,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isSessionActive) EmeraldActive.copy(alpha = 0.55f) else HudBorder
-                            ),
-                            modifier = Modifier.height(48.dp)
+                            color = SapphirePulse.copy(alpha = 0.22f),
+                            border = BorderStroke(1.dp, SapphirePulse.copy(alpha = 0.65f)),
+                            onClick = onWakeClick,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("power_mode_pill")
                         ) {
                             Box(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier.padding(horizontal = 12.dp)
                             ) {
-                                val wakeSuffix = if (uiState.behaviorSettings.wakeUpDetectionEnabled) " • WAKE" else ""
+                                Text(
+                                    text = "WAKE UP",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CyanPlasma
+                                )
+                            }
+                        }
+                    } else if (uiState.powerMode == SaraPowerMode.ONLINE || isSessionActive) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = EmeraldActive.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, EmeraldActive.copy(alpha = 0.55f)),
+                            onClick = onSleepClick,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("power_mode_pill")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            ) {
+                                val bgTag = if (uiState.behaviorSettings.backgroundAssistantEnabled) "BG • " else ""
+                                Text(
+                                    text = "${bgTag}SLEEP",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = EmeraldActive
+                                )
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = HudCardSurface,
+                            border = BorderStroke(1.dp, HudBorder),
+                            onClick = onSleepClick,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("power_mode_pill")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 12.dp)
+                            ) {
+                                val bgSuffix = if (uiState.behaviorSettings.backgroundAssistantEnabled) " • BG" else ""
                                 Text(
                                     text = when {
-                                        isLiveBrain && isSessionActive -> "LIVE VOICE"
-                                        isLiveBrain -> "LIVE READY$wakeSuffix"
-                                        uiState.behaviorSettings.continuousConversationEnabled -> "AUTO LOOP$wakeSuffix"
-                                        else -> "SINGLE TURN$wakeSuffix"
+                                        isLiveBrain -> "LIVE$bgSuffix"
+                                        uiState.behaviorSettings.continuousConversationEnabled -> "LOOP$bgSuffix"
+                                        else -> "READY$bgSuffix"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (isSessionActive) EmeraldActive else CyanPlasma
+                                    color = CyanPlasma
                                 )
                             }
                         }

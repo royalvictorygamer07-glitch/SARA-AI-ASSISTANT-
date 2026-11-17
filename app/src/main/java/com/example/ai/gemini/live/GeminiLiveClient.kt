@@ -301,7 +301,7 @@ class GeminiLiveClient(
                             _connectionState.value = LiveConnectionState.SPEAKING
                             audioStreamManager.playPcm24k(pcmBytes)
                         }
-                    } else if (part.has("text")) {
+                    } else if (part.has("text") && !part.optBoolean("thought", false)) {
                         val textPart = part.optString("text", "")
                         if (textPart.isNotBlank()) {
                             _events.tryEmit(GeminiLiveEvent.OutputTranscript(textPart))
@@ -422,11 +422,8 @@ class GeminiLiveClient(
     }
 
     private fun buildSetupPayload(liveModelName: String, voiceName: String): JSONObject {
-        val modelPath = if (liveModelName.startsWith("models/")) {
-            liveModelName
-        } else {
-            "models/$liveModelName"
-        }
+        val normalizedLive = com.example.core.security.GeminiCredentials.normalizeLiveModel(liveModelName)
+        val modelPath = "models/$normalizedLive"
         val systemInstructionText = SaraPersonaPromptBuilder.buildLiveVoiceSystemInstruction(
             userProfile = cachedUserProfile,
             memories = cachedMemories,

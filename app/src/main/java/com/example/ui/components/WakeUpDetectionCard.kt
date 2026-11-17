@@ -63,6 +63,8 @@ import com.example.voice.wake.WakeServiceState
 fun WakeUpDetectionCard(
     uiState: SaraUiState,
     onToggleWakeUpDetection: (Boolean) -> Unit,
+    onToggleBackgroundAssistant: (Boolean) -> Unit,
+    onOpenOverlayPermissionSettings: () -> Unit,
     onImportVoskModelClick: () -> Unit,
     onClearVoskModelClick: () -> Unit,
     onRecordEnrollmentSample: () -> Unit,
@@ -103,12 +105,12 @@ fun WakeUpDetectionCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column {
                         Text(
-                            text = "Wake Up Detection",
+                            text = "Wake Up Detection & Background Mode",
                             style = MaterialTheme.typography.titleMedium,
                             color = CyanPlasma
                         )
                         Text(
-                            text = "Hands-free \"Hey Sara\" background service",
+                            text = "Hands-free \"Hey Sara\" & \"Sara sleep\" background service",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -125,13 +127,43 @@ fun WakeUpDetectionCard(
                 )
             }
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Keep Voice Active in Background",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Continue talking, opening apps, and saying \"Sara sleep\" / \"Hey Sara\" while SARA is minimized.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = behavior.backgroundAssistantEnabled,
+                    onCheckedChange = onToggleBackgroundAssistant,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = VoidObsidian,
+                        checkedTrackColor = CyanPlasma
+                    ),
+                    modifier = Modifier.testTag("background_assistant_switch")
+                )
+            }
+
             // Live Service State Pill
             val (badgeColor, badgeText) = when (uiState.wakeServiceState) {
+                WakeServiceState.ONLINE_BACKGROUND -> EmeraldActive to "ONLINE IN BACKGROUND"
+                WakeServiceState.SLEEPING -> SapphirePulse to "SLEEP MODE • SAY \"HEY SARA\""
                 WakeServiceState.LISTENING -> EmeraldActive to "FOREGROUND MIC ACTIVE"
                 WakeServiceState.PAUSED_FOR_SESSION -> SapphirePulse to "PAUSED FOR VOICE SESSION"
                 WakeServiceState.STARTING -> AmberThinking to "LOADING MODEL"
                 WakeServiceState.WAKE_TRIGGERED -> EmeraldActive to "WAKE TRIGGERED"
-                WakeServiceState.MODEL_MISSING -> AmberThinking to "VOSK MODEL REQUIRED"
+                WakeServiceState.MODEL_MISSING -> AmberThinking to "VOSK OR SPEECH ENGINE NEEDED"
                 WakeServiceState.PERMISSION_MISSING -> CrimsonAlert to "MIC PERMISSION REQUIRED"
                 WakeServiceState.ERROR -> CrimsonAlert to "SERVICE ERROR"
                 WakeServiceState.DISABLED -> TextMuted to "DISABLED"
@@ -150,12 +182,59 @@ fun WakeUpDetectionCard(
                         color = badgeColor
                     )
                     val detail = uiState.wakeServiceDiagnostic
-                        ?: "When enabled, a persistent Android notification indicates active microphone monitoring."
+                        ?: "When enabled, a persistent Android notification keeps background conversation and Sleep/Wake active."
                     Text(
                         text = detail,
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
+                }
+            }
+
+            // Background App-Launch Permission (Display over other apps / SYSTEM_ALERT_WINDOW)
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = HudCardElevated,
+                border = BorderStroke(
+                    1.dp,
+                    if (uiState.commandPermissions.canDrawOverlays) EmeraldActive.copy(alpha = 0.4f) else AmberThinking.copy(alpha = 0.5f)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (uiState.commandPermissions.canDrawOverlays) {
+                                "Background App Launch: Ready"
+                            } else {
+                                "Allow Display Over Other Apps"
+                            },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (uiState.commandPermissions.canDrawOverlays) EmeraldActive else AmberThinking
+                        )
+                        Text(
+                            text = if (uiState.commandPermissions.canDrawOverlays) {
+                                "SARA can open YouTube, WhatsApp & apps directly from background."
+                            } else {
+                                "Required on Android 10+ so SARA can open apps directly while minimized."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = onOpenOverlayPermissionSettings,
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("overlay_permission_button")
+                    ) {
+                        Text(if (uiState.commandPermissions.canDrawOverlays) "Granted" else "Allow")
+                    }
                 }
             }
 

@@ -10,5 +10,6 @@ enum class ActionCategory {
     IMAGE_ANALYSIS,
     MEMORY,
     SETTINGS,
-    SYSTEM_ACTION
+    SYSTEM_ACTION,
+    SLEEP_MODE
 }

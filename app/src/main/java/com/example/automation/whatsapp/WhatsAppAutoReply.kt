@@ -51,8 +51,10 @@ object WhatsAppAutoReply {
         "ongoing voice call",
         "ongoing video call",
         "backing up messages",
-        "new messages"
+        "waiting for this message"
     )
+    private val UNREAD_COUNT_TITLE_SUFFIX = "\\s*\\(\\d+\\s+messages?\\)$".toRegex(RegexOption.IGNORE_CASE)
+    private val NUMERIC_NEW_MESSAGES_SUMMARY = "^\\d+\\s+new\\s+messages?$".toRegex(RegexOption.IGNORE_CASE)
 
     private val SPAM_OR_PHISHING_INDICATORS = listOf(
         "your otp is",
@@ -288,7 +290,8 @@ object WhatsAppAutoReply {
     }
 
     fun buildConversationKey(packageName: String, conversationTitle: String, fallbackKey: String): String {
-        val cleanTitle = conversationTitle.trim().lowercase().replace("\\s+".toRegex(), " ")
+        val strippedTitle = conversationTitle.trim().replace(UNREAD_COUNT_TITLE_SUFFIX, "")
+        val cleanTitle = strippedTitle.trim().lowercase().replace("\\s+".toRegex(), " ")
         return if (cleanTitle.isNotEmpty()) {
             "$packageName::$cleanTitle"
         } else {
@@ -337,6 +340,7 @@ object WhatsAppAutoReply {
     private fun isIgnoredSystemAlert(text: String): Boolean {
         val lower = text.trim().lowercase()
         if (lower.isEmpty()) return true
+        if (lower == "new messages" || NUMERIC_NEW_MESSAGES_SUMMARY.matches(lower)) return true
         return IGNORED_SUMMARY_PATTERNS.any { lower.contains(it) }
     }
 

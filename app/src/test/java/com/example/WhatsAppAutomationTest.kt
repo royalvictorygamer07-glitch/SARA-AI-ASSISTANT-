@@ -741,4 +741,140 @@ class WhatsAppAutomationTest {
         )
         assertTrue(launchResult is ActionExecutionResult.Executed)
     }
+
+    @Test
+    fun `gemini credentials migrate deprecated models to 3_8 and reply engine falls back on 404 while filtering thoughts`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = buildInMemoryDb(context)
+        try {
+            assertEquals("gemini-3.8-flash", GeminiCredentials.DEFAULT_GEMINI_MODEL)
+            assertEquals("gemini-3.8-live", GeminiCredentials.DEFAULT_GEMINI_LIVE_MODEL)
+            assertEquals("gemini-3.8-flash", GeminiCredentials.normalizeStandardModel("models/gemini-2.5-flash"))
+            assertEquals("gemini-3.8-live", GeminiCredentials.normalizeLiveModel("gemini-2.0-flash-live-001"))
+            assertEquals(0, AutomationSettings().aiReplyDelaySeconds)
+
+            val credStore = com.example.core.security.CredentialStore(context).apply {
+                saveGeminiCredentials("AIzaFakeKey", "gemini-2.5-flash", "gemini-2.5-flash-native-audio-preview-12-2025", "Aoede")
+            }
+            assertEquals("gemini-3.8-flash", credStore.geminiCredentials.value.modelName)
+            assertEquals("gemini-3.8-live", credStore.geminiCredentials.value.liveModelName)
+
+            val requestedUrls = mutableListOf<String>()
+            val mockFallbackClient = OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val url = chain.request().url.toString()
+                    requestedUrls.add(url)
+                    if (url.contains("gemini-3.8-flash")) {
+                        Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("""{"error":{"message":"Model not found"}}""".toResponseBody())
+                            .build()
+                    } else {
+                        Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body(
+                                """{
+                                  "candidates":[{
+                                    "content":{
+                                      "parts":[
+                                        {"thought":true,"text":"Internal reasoning should not appear"},
+                                        {"text":"{\"detected_language\":\"Hinglish\",\"intent\":\"greeting\",\"should_reply\":true,\"safety_reason\":\"\",\"reply\":\"Hii Anish! Kaise ho?\"}"}
+                                      ]
+                                    }
+                                  }]
+                                }""".trimIndent().toResponseBody()
+                            )
+                            .build()
+                    }
+                }
+                .build()
+
+            val networkMonitor = com.example.core.network.NetworkMonitor(context)
+            if (networkMonitor.isOnline()) {
+                val memory = ConversationMemory(db.whatsAppAutomationDao())
+                val ctxBundle = memory.loadConversationContext("com.whatsapp::anish", "Anish", false)
+                val engine = GeminiReplyEngine(credStore, networkMonitor, mockFallbackClient)
+                val outcome = engine.generateWhatsAppReply(
+                    senderName = "Anish",
+                    conversationTitle = "Anish",
+                    isGroupConversation = false,
+                    incomingMessage = "Hii",
+                    contextBundle = ctxBundle,
+                    ruleInstruction = null,
+                    settings = AutomationSettings()
+                )
+                assertTrue(outcome is GeminiReplyOutcome.Generated)
+                assertEquals("Hii Anish! Kaise ho?", (outcome as GeminiReplyOutcome.Generated).replyText)
+                assertTrue(requestedUrls.any { it.contains("gemini-3.8-flash") })
+                assertTrue(requestedUrls.any { it.contains("gemini-3.5-flash-lite") })
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `whatsapp parser preserves unread count keys and keeps active reply targets across auxiliary updates`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertEquals(
+            "com.whatsapp::anish exploits",
+            WhatsAppAutoReply.buildConversationKey("com.whatsapp", "ANISH EXPLOITS (2 messages)", "k1")
+        )
+
+        val senderPerson = Person.Builder().setName("Anish").build()
+        val mePerson = Person.Builder().setName("You").build()
+        val notification = NotificationCompat.Builder(context, "wa_msg")
+            .setSmallIcon(android.R.drawable.sym_action_chat)
+            .setContentTitle("Anish")
+            .setStyle(
+                NotificationCompat.MessagingStyle(mePerson)
+                    .addMessage("I have some new messages for you regarding project", 50_000L, senderPerson)
+            )
+            .build()
+
+        @Suppress("DEPRECATION")
+        val sbn = StatusBarNotification(
+            "com.whatsapp",
+            "com.whatsapp",
+            10,
+            null,
+            1000,
+            0,
+            0,
+            notification,
+            android.os.Process.myUserHandle(),
+            50_000L
+        )
+        val parsed = WhatsAppAutoReply.parseStatusBarNotification(sbn)
+        assertNotNull(parsed)
+        assertEquals("I have some new messages for you regarding project", parsed!!.messages.single().messageText)
+
+        // Ensure markNoReplyActionAvailable for a different notificationKey does NOT wipe active reply target
+        val replySender = WhatsAppReplySender(context)
+        val pi = PendingIntent.getBroadcast(
+            context,
+            404,
+            Intent("com.example.TEST_ACTION"),
+            PendingIntent.FLAG_MUTABLE
+        )
+        replySender.registerTarget(
+            ActiveReplyTarget(
+                notificationKey = "key-primary",
+                conversationKey = "com.whatsapp::anish",
+                conversationTitle = "Anish",
+                packageName = "com.whatsapp",
+                remoteInputs = arrayOf(RemoteInput.Builder("reply").build()),
+                actionIntent = pi,
+                postedAt = 1000L
+            )
+        )
+        replySender.markNoReplyActionAvailable("key-aux-summary", "com.whatsapp::anish")
+        assertTrue(replySender.hasActiveReplyTarget("com.whatsapp::anish"))
+    }
 }

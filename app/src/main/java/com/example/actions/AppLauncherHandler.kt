@@ -78,13 +78,15 @@ class AppLauncherHandler(private val context: Context) {
     }
 
     private fun launchSafe(intent: Intent, successMessage: String): ActionExecutionResult {
-        return runCatching {
-            context.startActivity(intent)
-            ActionExecutionResult.Executed(successMessage)
-        }.getOrElse { err ->
-            ActionExecutionResult.Unavailable(
-                "Could not launch app: ${err.localizedMessage ?: "unsupported"}"
-            )
+        return when (val outcome = BackgroundActivityStarter.launchActivity(context, intent, successMessage)) {
+            BackgroundActivityStarter.LaunchOutcome.LaunchedDirectly ->
+                ActionExecutionResult.Executed(successMessage)
+            BackgroundActivityStarter.LaunchOutcome.NotificationFallbackPosted ->
+                ActionExecutionResult.Executed(
+                    "$successMessage (Tap notification or grant Display Over Other Apps in Settings for direct background open)"
+                )
+            is BackgroundActivityStarter.LaunchOutcome.Failed ->
+                ActionExecutionResult.Unavailable("Could not launch app: ${outcome.reason}")
         }
     }
 }

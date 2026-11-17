@@ -21,6 +21,20 @@ class SaraNotificationService : NotificationListenerService() {
         super.onListenerConnected()
         Log.i(TAG, "SaraNotificationService connected.")
         automationManager?.onListenerConnected()
+        val recentCutoffMs = System.currentTimeMillis() - 120_000L
+        runCatching {
+            activeNotifications
+                ?.filter { it.packageName in WhatsAppAutoReply.WHATSAPP_PACKAGES }
+                ?.forEach { sbn ->
+                    val parsed = WhatsAppAutoReply.parseStatusBarNotification(sbn) ?: return@forEach
+                    val latestTs = parsed.messages.maxOfOrNull { it.timestamp } ?: sbn.postTime
+                    if (latestTs >= recentCutoffMs) {
+                        automationManager?.onIncomingParsedNotification(parsed)
+                    } else if (parsed.replyTarget != null) {
+                        automationManager?.replySender?.registerTarget(parsed.replyTarget)
+                    }
+                }
+        }
     }
 
     override fun onListenerDisconnected() {

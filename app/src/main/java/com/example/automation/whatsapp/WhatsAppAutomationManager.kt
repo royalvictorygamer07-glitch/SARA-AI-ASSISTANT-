@@ -170,8 +170,27 @@ class WhatsAppAutomationManager(
             if (!settings.automationEnabled) return@launch
 
             val unseenMessages = mutableListOf<WhatsAppIncomingMessage>()
+            val existingContext = if (parsed.messages.isNotEmpty()) {
+                runCatching {
+                    conversationMemory.loadConversationContext(
+                        conversationKey = parsed.conversationKey,
+                        displayName = parsed.conversationTitle,
+                        isGroup = parsed.isGroupConversation,
+                        historyLimit = 6
+                    )
+                }.getOrNull()
+            } else {
+                null
+            }
+            val recentPersistedOutgoing = existingContext?.recentOutgoingReplies.orEmpty()
+                .map { it.trim().lowercase() }
+                .toSet()
+
             for (msg in parsed.messages) {
                 if (isSelfSentEcho(msg.conversationKey, msg.messageText)) {
+                    continue
+                }
+                if (msg.messageText.trim().lowercase() in recentPersistedOutgoing) {
                     continue
                 }
                 if (conversationMemory.isAlreadyProcessed(msg.fingerprint)) {
@@ -484,28 +503,59 @@ class WhatsAppAutomationManager(
             }
 
             // 5. Post-generation reply safety & anti-duplication validation
-            val candidateReply = generatedReply
+            var candidateReply = generatedReply
             val geminiCreds = credentialStore.geminiCredentials.value
             val elevenCreds = credentialStore.elevenLabsCredentials.value
 
-            val validatedReply = when (
-                val safeCheck = WhatsAppAutoReply.validateGeneratedReply(
-                    replyText = candidateReply,
-                    recentOutgoingReplies = if (replySource == "RULE") emptyList() else contextBundle.recentOutgoingReplies,
-                    geminiCreds = geminiCreds,
-                    elevenCreds = elevenCreds
-                )
+            var safeCheck = WhatsAppAutoReply.validateGeneratedReply(
+                replyText = candidateReply,
+                recentOutgoingReplies = if (replySource == "RULE") emptyList() else contextBundle.recentOutgoingReplies,
+                geminiCreds = geminiCreds,
+                elevenCreds = elevenCreds
+            )
+
+            // If Gemini happened to repeat a previous phrasing verbatim, ask once for a fresh variation
+            if (safeCheck is SafetyValidationResult.Blocked &&
+                replySource == "GEMINI" &&
+                safeCheck.reason.contains("repetitive", ignoreCase = true)
             ) {
-                is SafetyValidationResult.Safe -> safeCheck.sanitizedReply
+                val variedOutcome = geminiConcurrencyLimiter.withPermit {
+                    geminiReplyEngine.generateWhatsAppReply(
+                        senderName = latestMsg.senderName,
+                        conversationTitle = conversationTitle,
+                        isGroupConversation = isGroup,
+                        incomingMessage = combinedIncomingText,
+                        contextBundle = contextBundle,
+                        ruleInstruction = buildString {
+                            if (!ruleInstruction.isNullOrBlank()) append("$ruleInstruction. ")
+                            append("IMPORTANT: Write a completely fresh phrasing different from: \"$candidateReply\"")
+                        },
+                        settings = settings
+                    )
+                }
+                if (variedOutcome is GeminiReplyOutcome.Generated) {
+                    candidateReply = variedOutcome.replyText
+                    detectedLanguage = variedOutcome.detectedLanguage
+                    safeCheck = WhatsAppAutoReply.validateGeneratedReply(
+                        replyText = candidateReply,
+                        recentOutgoingReplies = contextBundle.recentOutgoingReplies,
+                        geminiCreds = geminiCreds,
+                        elevenCreds = elevenCreds
+                    )
+                }
+            }
+
+            val validatedReply = when (val checked = safeCheck) {
+                is SafetyValidationResult.Safe -> checked.sanitizedReply
                 is SafetyValidationResult.Blocked -> {
                     _serviceStatus.value = AutomationServiceStatus.REPLY_FAILED
-                    _statusDetail.value = safeCheck.reason
+                    _statusDetail.value = checked.reason
                     conversationMemory.logActivity(
                         conversationKey,
                         latestMsg.senderName,
                         "SKIPPED",
                         "Safety Blocked",
-                        safeCheck.reason
+                        checked.reason
                     )
                     return@withLock
                 }

@@ -1,29 +1,22 @@
 package com.example.ui
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.actions.ActionRouter
 import com.example.actions.IncomingCallAssistantManager
 import com.example.actions.IncomingCallCapabilityReport
-import com.example.ai.gemini.ChatTurn
 import com.example.ai.gemini.GeminiClient
 import com.example.ai.gemini.GeminiResult
 import com.example.ai.gemini.live.GeminiLiveClient
-import com.example.ai.gemini.live.GeminiLiveEvent
 import com.example.ai.gemini.live.LiveConnectionState
 import com.example.automation.whatsapp.AutomationServiceStatus
 import com.example.automation.whatsapp.AutomationSettings
@@ -33,9 +26,6 @@ import com.example.automation.whatsapp.WhatsAppContactProfileEntity
 import com.example.automation.whatsapp.WhatsAppContactRuleEntity
 import com.example.automation.whatsapp.WhatsAppMessageEntity
 import com.example.commands.ActionCategory
-import com.example.commands.ActionExecutionResult
-import com.example.commands.AssistantCommand
-import com.example.commands.CommandParser
 import com.example.commands.PendingConfirmation
 import com.example.core.di.AppContainer
 import com.example.core.network.NetworkMonitor
@@ -50,18 +40,14 @@ import com.example.memory.ConversationTurnEntity
 import com.example.memory.MemoryCategory
 import com.example.memory.MemoryRecord
 import com.example.memory.MemoryStorageProvider
-import com.example.voice.audio.AudioCaptureCoordinator
-import com.example.voice.audio.AudioCaptureOwner
+import com.example.voice.SaraVoiceCoordinator
 import com.example.voice.audio.MicTestUiState
 import com.example.voice.audio.MicrophoneTestEngine
 import com.example.voice.audio.SaraAudioFocusManager
-import com.example.voice.audio.VadEvent
-import com.example.voice.audio.VoiceActivityDetector
 import com.example.voice.stt.SttEngine
-import com.example.voice.stt.SttEvent
 import com.example.voice.tts.ElevenLabsTtsEngine
 import com.example.voice.tts.ElevenLabsVoiceOption
-import com.example.voice.tts.TtsResult
+import com.example.voice.wake.SaraPowerMode
 import com.example.voice.wake.VoskModelInspectionResult
 import com.example.voice.wake.VoskModelInspector
 import com.example.voice.wake.WakeDetectionService
@@ -72,94 +58,21 @@ import com.example.voice.wake.WakePopupUiState
 import com.example.voice.wake.WakeServiceState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.UUID
-
-enum class AssistantStatus {
-    IDLE,
-    CONNECTING,
-    CONNECTED,
-    LISTENING,
-    THINKING,
-    SPEAKING,
-    RECONNECTING,
-    ERROR
-}
-
-data class ConversationMessage(
-    val id: String = UUID.randomUUID().toString(),
-    val isUser: Boolean,
-    val text: String,
-    val actionTag: String? = null,
-    val actionStatus: String? = null,
-    val isError: Boolean = false,
-    val timestamp: Long = System.currentTimeMillis()
-)
-
-sealed interface VisionAnalysisUiState {
-    data object Idle : VisionAnalysisUiState
-    data object Analyzing : VisionAnalysisUiState
-    data class Success(val prompt: String, val analysis: String) : VisionAnalysisUiState
-    data class Error(val message: String) : VisionAnalysisUiState
-}
-
-data class PermissionRequestPrompt(
-    val permission: String,
-    val rationale: String,
-    val retryCommand: AssistantCommand? = null
-)
-
-data class CommandPermissionStatus(
-    val recordAudio: Boolean = false,
-    val readContacts: Boolean = false,
-    val callPhone: Boolean = false,
-    val readPhoneState: Boolean = false,
-    val postNotifications: Boolean = true,
-    val camera: Boolean = false,
-    val bluetoothConnect: Boolean = true
-) {
-    val allGranted: Boolean
-        get() = recordAudio &&
-            readContacts &&
-            callPhone &&
-            readPhoneState &&
-            postNotifications &&
-            camera &&
-            bluetoothConnect
-
-    fun missingPermissions(): Array<String> = buildList {
-        if (!recordAudio) add(Manifest.permission.RECORD_AUDIO)
-        if (!readContacts) add(Manifest.permission.READ_CONTACTS)
-        if (!callPhone) add(Manifest.permission.CALL_PHONE)
-        if (!readPhoneState) add(Manifest.permission.READ_PHONE_STATE)
-        if (!camera) add(Manifest.permission.CAMERA)
-        if (!postNotifications && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        if (!bluetoothConnect && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-    }.toTypedArray()
-}
 
 data class SaraUiState(
     val status: AssistantStatus = AssistantStatus.IDLE,
+    val powerMode: SaraPowerMode = SaraPowerMode.OFF,
     val liveConnectionState: LiveConnectionState = LiveConnectionState.DISCONNECTED,
     val partialTranscript: String = "",
     val liveSaraTranscript: String = "",
@@ -216,33 +129,18 @@ class SaraViewModel(
     private val geminiLiveClient: GeminiLiveClient,
     private val ttsEngine: ElevenLabsTtsEngine,
     private val sttEngine: SttEngine,
-    private val actionRouter: ActionRouter,
     private val incomingCallManager: IncomingCallAssistantManager,
-    private val audioCaptureCoordinator: AudioCaptureCoordinator,
     private val audioFocusManager: SaraAudioFocusManager,
     private val microphoneTestEngine: MicrophoneTestEngine,
     private val wakeEnrollmentManager: WakePhraseEnrollmentManager,
     private val wakeEventBus: WakeEventBus,
+    private val voiceCoordinator: SaraVoiceCoordinator,
     private val voskInspectionFlow: StateFlow<VoskModelInspectionResult>,
     private val onRefreshVoskInspection: () -> Unit,
     private val whatsAppAutomationManager: WhatsAppAutomationManager
 ) : ViewModel() {
 
-    private val _classicStatus = MutableStateFlow(AssistantStatus.IDLE)
-    private val _messages = MutableStateFlow(
-        listOf(
-            ConversationMessage(
-                isUser = false,
-                text = "Hi, I'm Sara. Tap Start Conversation for real-time Gemini Live voice chat, or ask anything below."
-            )
-        )
-    )
-    private val _liveUserDraft = MutableStateFlow("")
-    private val _liveSaraDraft = MutableStateFlow("")
     private val _selectedSessionId = MutableStateFlow<String?>(null)
-    private val _pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
-    private val _pendingPermissionRequest = MutableStateFlow<PermissionRequestPrompt?>(null)
-    private val _statusBanner = MutableStateFlow<String?>(null)
     private val _availableVoices = MutableStateFlow<List<ElevenLabsVoiceOption>>(emptyList())
     private val _isFetchingVoices = MutableStateFlow(false)
     private val _voicesFetchMessage = MutableStateFlow<String?>(null)
@@ -252,27 +150,15 @@ class SaraViewModel(
     private val _incomingCallReport = MutableStateFlow(incomingCallManager.inspectCapabilities())
     private val _incomingCallSimResult = MutableStateFlow<String?>(null)
 
-    private val _navigationEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val navigationEvents: SharedFlow<String> = _navigationEvents.asSharedFlow()
-
-    private val _requestMicPermissionEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
-    val requestMicPermissionEvent: SharedFlow<Unit> = _requestMicPermissionEvent.asSharedFlow()
+    val navigationEvents: SharedFlow<String> = voiceCoordinator.navigationEvents
+    val requestMicPermissionEvent: SharedFlow<Unit> = voiceCoordinator.requestMicPermissionEvent
 
     private val _batteryOptimizationIgnored = MutableStateFlow(checkBatteryOptimizationIgnored())
     private val _commandPermissions = MutableStateFlow(checkCommandPermissions())
     private var pendingEnableWakeAfterMicGrant = false
 
-    private var activeSessionId: String = UUID.randomUUID().toString()
-    private var sessionInitializedInDb = false
-
-    private var activeTurnJob: Job? = null
-    private var bargeInMonitorJob: Job? = null
-    private var autoRestartAllowed = false
-    private var consecutiveSilentTimeouts = 0
-    private var lastAutoResumeFromVoice = false
-
     private val liveStatusFlow = combine(
-        _classicStatus,
+        voiceCoordinator.classicStatus,
         geminiLiveClient.connectionState,
         credentialStore.behaviorSettings,
         sttEngine.normalizedRms,
@@ -288,21 +174,26 @@ class SaraViewModel(
         val liveMicAmp = values[5] as Float
         val livePlayAmp = values[6] as Float
 
-        val effectiveStatus = if (behavior.geminiLiveEnabled && liveConn != LiveConnectionState.DISCONNECTED) {
-            when (liveConn) {
-                LiveConnectionState.CONNECTING -> AssistantStatus.CONNECTING
-                LiveConnectionState.CONNECTED -> AssistantStatus.CONNECTED
-                LiveConnectionState.LISTENING -> AssistantStatus.LISTENING
-                LiveConnectionState.SPEAKING -> AssistantStatus.SPEAKING
-                LiveConnectionState.RECONNECTING -> AssistantStatus.RECONNECTING
-                LiveConnectionState.ERROR -> AssistantStatus.ERROR
-                LiveConnectionState.DISCONNECTED -> classic
+        val effectiveStatus = when {
+            classic == AssistantStatus.SLEEPING -> AssistantStatus.SLEEPING
+            behavior.geminiLiveEnabled && liveConn != LiveConnectionState.DISCONNECTED -> {
+                when (liveConn) {
+                    LiveConnectionState.CONNECTING -> AssistantStatus.CONNECTING
+                    LiveConnectionState.CONNECTED -> AssistantStatus.CONNECTED
+                    LiveConnectionState.LISTENING -> AssistantStatus.LISTENING
+                    LiveConnectionState.SPEAKING -> AssistantStatus.SPEAKING
+                    LiveConnectionState.RECONNECTING -> AssistantStatus.RECONNECTING
+                    LiveConnectionState.ERROR -> AssistantStatus.ERROR
+                    LiveConnectionState.DISCONNECTED -> classic
+                }
             }
-        } else {
-            classic
+            else -> classic
         }
 
-        val wave = if (behavior.geminiLiveEnabled && liveConn != LiveConnectionState.DISCONNECTED) {
+        val wave = if (behavior.geminiLiveEnabled &&
+            liveConn != LiveConnectionState.DISCONNECTED &&
+            effectiveStatus != AssistantStatus.SLEEPING
+        ) {
             when (liveConn) {
                 LiveConnectionState.SPEAKING -> livePlayAmp.coerceAtLeast(0.18f)
                 LiveConnectionState.LISTENING,
@@ -312,13 +203,14 @@ class SaraViewModel(
                 else -> 0.08f
             }
         } else {
-            when (classic) {
+            when (effectiveStatus) {
                 AssistantStatus.LISTENING -> sttRms
                 AssistantStatus.SPEAKING -> ttsAmp
                 AssistantStatus.CONNECTED -> 0.16f
                 AssistantStatus.THINKING,
                 AssistantStatus.CONNECTING,
                 AssistantStatus.RECONNECTING -> 0.45f
+                AssistantStatus.SLEEPING -> 0.05f
                 AssistantStatus.IDLE,
                 AssistantStatus.ERROR -> 0.08f
             }
@@ -329,9 +221,9 @@ class SaraViewModel(
 
     private val transcriptAndMessagesFlow = combine(
         sttEngine.partialTranscript,
-        _liveUserDraft,
-        _liveSaraDraft,
-        _messages,
+        voiceCoordinator.liveUserDraft,
+        voiceCoordinator.liveSaraDraft,
+        voiceCoordinator.messages,
         historyRepository.observeSessions()
     ) { sttPartial, liveUser, liveSara, messages, sessions ->
         TranscriptBundle(
@@ -358,9 +250,9 @@ class SaraViewModel(
     }
 
     private val auxFlow = combine(
-        _pendingConfirmation,
-        _pendingPermissionRequest,
-        _statusBanner,
+        voiceCoordinator.pendingConfirmation,
+        voiceCoordinator.pendingPermissionRequest,
+        voiceCoordinator.statusBanner,
         _availableVoices,
         _isFetchingVoices,
         _voicesFetchMessage,
@@ -392,6 +284,7 @@ class SaraViewModel(
     private val wakeFlow = combine(
         wakeEventBus.serviceState,
         wakeEventBus.serviceDiagnostic,
+        wakeEventBus.powerMode,
         voskInspectionFlow,
         wakeEnrollmentManager.uiState,
         microphoneTestEngine.state,
@@ -402,12 +295,13 @@ class SaraViewModel(
         WakeBundle(
             serviceState = values[0] as WakeServiceState,
             serviceDiagnostic = values[1] as String?,
-            voskInspection = values[2] as VoskModelInspectionResult?,
-            enrollmentState = values[3] as WakeEnrollmentUiState,
-            micTestState = values[4] as MicTestUiState,
-            popupState = values[5] as WakePopupUiState,
-            isIgnoringBatteryOptimizations = values[6] as Boolean,
-            audioFocusConflict = values[7] as String?
+            powerMode = values[2] as SaraPowerMode,
+            voskInspection = values[3] as VoskModelInspectionResult?,
+            enrollmentState = values[4] as WakeEnrollmentUiState,
+            micTestState = values[5] as MicTestUiState,
+            popupState = values[6] as WakePopupUiState,
+            isIgnoringBatteryOptimizations = values[7] as Boolean,
+            audioFocusConflict = values[8] as String?
         )
     }
 
@@ -460,6 +354,7 @@ class SaraViewModel(
 
         SaraUiState(
             status = statusTriple.first,
+            powerMode = wake.powerMode,
             liveConnectionState = statusTriple.second,
             partialTranscript = transcriptBundle.partialTranscript,
             liveSaraTranscript = transcriptBundle.liveSaraTranscript,
@@ -519,18 +414,11 @@ class SaraViewModel(
     )
 
     init {
-        observeSttEvents()
-        observeGeminiLiveEvents()
-        observeWakeEvents()
+        observeWakePopupStatus()
         syncWakeServiceOnLaunch()
     }
 
-    private fun observeWakeEvents() {
-        viewModelScope.launch {
-            wakeEventBus.wakeTriggers.collect { event ->
-                handleWakePhraseTriggered(event.recognizedPhrase, hasMicPermission())
-            }
-        }
+    private fun observeWakePopupStatus() {
         viewModelScope.launch {
             liveStatusFlow.collect { (status, _, amp) ->
                 if (wakeEventBus.popupState.value.visible) {
@@ -540,13 +428,14 @@ class SaraViewModel(
                         AssistantStatus.LISTENING -> "Listening to your command..."
                         AssistantStatus.THINKING -> "Thinking..."
                         AssistantStatus.SPEAKING -> "Sara is speaking..."
+                        AssistantStatus.SLEEPING -> "Sleep Mode — say \"Hey Sara\""
                         AssistantStatus.RECONNECTING -> "Reconnecting..."
                         AssistantStatus.ERROR -> "Voice error — check Settings"
                         AssistantStatus.IDLE -> "Ready"
                     }
-                    val preview = _liveUserDraft.value
+                    val preview = voiceCoordinator.liveUserDraft.value
                         .ifBlank { sttEngine.partialTranscript.value }
-                        .ifBlank { _liveSaraDraft.value }
+                        .ifBlank { voiceCoordinator.liveSaraDraft.value }
                     wakeEventBus.updateWakePopup(subtitle = subtitle, preview = preview, amplitude = amp)
                 }
             }
@@ -566,138 +455,17 @@ class SaraViewModel(
                             "Microphone permission required for Wake Up Detection."
                         )
                     }
-                    !inspection.isReady -> {
+                    !inspection.isReady && !sttEngine.isRecognitionAvailable() -> {
                         wakeEventBus.updateServiceState(
                             WakeServiceState.MODEL_MISSING,
                             inspection.diagnosticMessage
                         )
                     }
+                    wakeEventBus.powerMode.value == SaraPowerMode.ONLINE -> {
+                        WakeDetectionService.startOnline(appContext)
+                    }
                     else -> {
-                        WakeDetectionService.start(appContext)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun observeGeminiLiveEvents() {
-        viewModelScope.launch {
-            geminiLiveClient.events.collect { event ->
-                when (event) {
-                    GeminiLiveEvent.Connected -> {
-                        _statusBanner.value = null
-                    }
-                    is GeminiLiveEvent.InputTranscript -> {
-                        _liveUserDraft.update { prev -> appendTranscriptFragment(prev, event.text) }
-                    }
-                    is GeminiLiveEvent.OutputTranscript -> {
-                        // Commit pending user transcript as soon as Sara starts replying
-                        commitLiveUserDraftIfPresent()
-                        _liveSaraDraft.update { prev -> appendTranscriptFragment(prev, event.text) }
-                    }
-                    GeminiLiveEvent.Interrupted -> {
-                        commitLiveUserDraftIfPresent()
-                        commitLiveSaraDraftIfPresent(interrupted = true)
-                    }
-                    GeminiLiveEvent.TurnComplete -> {
-                        commitLiveUserDraftIfPresent()
-                        commitLiveSaraDraftIfPresent(interrupted = false)
-                    }
-                    is GeminiLiveEvent.Error -> {
-                        _statusBanner.value = "${event.userMessage} (${event.diagnostic})"
-                        appendErrorMessage(event.userMessage)
-                    }
-                    is GeminiLiveEvent.Disconnected -> {
-                        commitLiveUserDraftIfPresent()
-                        commitLiveSaraDraftIfPresent(interrupted = false)
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun commitLiveUserDraftIfPresent() {
-        val text = _liveUserDraft.value.trim()
-        if (text.isEmpty()) return
-        _liveUserDraft.value = ""
-        appendMessage(ConversationMessage(isUser = true, text = text, actionTag = "LIVE"))
-        persistTurnToHistory(isUser = true, text = text, mode = "LIVE")
-    }
-
-    private suspend fun commitLiveSaraDraftIfPresent(interrupted: Boolean) {
-        val text = _liveSaraDraft.value.trim()
-        if (text.isEmpty()) return
-        _liveSaraDraft.value = ""
-        val suffix = if (interrupted) " [interrupted]" else ""
-        val display = "$text$suffix"
-        appendMessage(ConversationMessage(isUser = false, text = display, actionTag = "SARA LIVE"))
-        persistTurnToHistory(isUser = false, text = display, mode = "LIVE")
-        maybeExtractLiveMemory(text)
-    }
-
-    private suspend fun maybeExtractLiveMemory(saraResponse: String) {
-        if (!uiState.value.behaviorSettings.memoryEnabled) return
-        // Keep long-term memory focused on durable facts rather than noisy chatter;
-        // explicit user statements are stored cleanly when the user mentions preferences or details.
-        val lastUser = _messages.value.lastOrNull { it.isUser }?.text.orEmpty().trim()
-        val lower = lastUser.lowercase()
-        val containsDurableCue = listOf(
-            "my name is", "mera naam", "i like", "i prefer", "remember", "yaad rakhna",
-            "call me", "birthday", "lives in", "i work", "favorite", "favourite"
-        ).any { lower.contains(it) }
-        if (containsDurableCue && lastUser.length in 6..180) {
-            val cat = when {
-                lower.contains("prefer") || lower.contains("like") || lower.contains("fav") ->
-                    MemoryCategory.PREFERENCE
-                lower.contains("name") || lower.contains("naam") || lower.contains("call me") ->
-                    MemoryCategory.USER_INFO
-                else -> MemoryCategory.CONVERSATION
-            }
-            memoryRepository.saveMemory(category = cat, content = lastUser, source = "live_voice")
-        }
-    }
-
-    private fun observeSttEvents() {
-        viewModelScope.launch {
-            sttEngine.events.collect { event ->
-                audioCaptureCoordinator.release(AudioCaptureOwner.CLASSIC_STT)
-                when (event) {
-                    is SttEvent.FinalTranscript -> {
-                        consecutiveSilentTimeouts = 0
-                        lastAutoResumeFromVoice = true
-                        handleUserUtterance(event.text, fromVoice = true)
-                    }
-                    is SttEvent.TransientTimeout -> {
-                        val behavior = uiState.value.behaviorSettings
-                        if (autoRestartAllowed &&
-                            (behavior.continuousConversationEnabled || behavior.liveCallModeEnabled)
-                        ) {
-                            consecutiveSilentTimeouts++
-                            if (behavior.liveCallModeEnabled || consecutiveSilentTimeouts <= 3) {
-                                delay(300L)
-                                if (autoRestartAllowed && _classicStatus.value != AssistantStatus.SPEAKING &&
-                                    _classicStatus.value != AssistantStatus.THINKING &&
-                                    audioCaptureCoordinator.acquire(AudioCaptureOwner.CLASSIC_STT)
-                                ) {
-                                    _classicStatus.value = AssistantStatus.LISTENING
-                                    sttEngine.startListening(uiState.value.userProfile.sttLocaleTag())
-                                }
-                            } else {
-                                autoRestartAllowed = false
-                                _classicStatus.value = AssistantStatus.IDLE
-                                _statusBanner.value = "Listening paused after silence. Tap Start to resume."
-                            }
-                        } else {
-                            _classicStatus.value = AssistantStatus.IDLE
-                        }
-                    }
-                    is SttEvent.Error -> {
-                        _classicStatus.value = AssistantStatus.IDLE
-                        _statusBanner.value = event.message
-                        if (event.isFatal) {
-                            autoRestartAllowed = false
-                            appendErrorMessage(event.message)
-                        }
+                        WakeDetectionService.startSleep(appContext)
                     }
                 }
             }
@@ -705,41 +473,7 @@ class SaraViewModel(
     }
 
     fun onMicButtonPressed(hasMicPermission: Boolean) {
-        if (!hasMicPermission) {
-            _requestMicPermissionEvent.tryEmit(Unit)
-            return
-        }
-
-        val behavior = uiState.value.behaviorSettings
-        if (behavior.geminiLiveEnabled) {
-            if (geminiLiveClient.connectionState.value == LiveConnectionState.DISCONNECTED ||
-                geminiLiveClient.connectionState.value == LiveConnectionState.ERROR
-            ) {
-                startGeminiLiveSession()
-            } else {
-                endConversationSession()
-            }
-            return
-        }
-
-        when (_classicStatus.value) {
-            AssistantStatus.LISTENING -> {
-                autoRestartAllowed = false
-                sttEngine.stopListening()
-                _classicStatus.value = AssistantStatus.IDLE
-            }
-            AssistantStatus.SPEAKING,
-            AssistantStatus.THINKING,
-            AssistantStatus.CONNECTING,
-            AssistantStatus.RECONNECTING -> {
-                endConversationSession()
-            }
-            AssistantStatus.CONNECTED,
-            AssistantStatus.ERROR,
-            AssistantStatus.IDLE -> {
-                startVoiceListening()
-            }
-        }
+        voiceCoordinator.onMicButtonPressed(hasMicPermission)
     }
 
     fun onMicPermissionResult(granted: Boolean) {
@@ -753,550 +487,92 @@ class SaraViewModel(
                     WakeServiceState.PERMISSION_MISSING,
                     "Microphone permission denied for Wake Up Detection."
                 )
-                _statusBanner.value = "Microphone permission is required for Wake Up Detection."
+                voiceCoordinator.showBanner("Microphone permission is required for Wake Up Detection.")
             }
             return
         }
 
         if (granted) {
-            _statusBanner.value = null
-            if (uiState.value.behaviorSettings.geminiLiveEnabled) {
-                startGeminiLiveSession()
-            } else {
-                startVoiceListening()
-            }
+            voiceCoordinator.clearStatusBanner()
+            voiceCoordinator.startOnlineConversation()
         } else {
-            autoRestartAllowed = false
-            _classicStatus.value = AssistantStatus.IDLE
             val msg = "Microphone permission required hai."
-            _statusBanner.value = msg
-            appendErrorMessage(msg)
+            voiceCoordinator.showBanner(msg)
+            voiceCoordinator.appendErrorMessage(msg)
         }
     }
 
     fun handleWakePhraseTriggered(phrase: String = "hey sara", hasMicPermission: Boolean = hasMicPermission()) {
         if (!hasMicPermission) {
-            _statusBanner.value = "Grant Microphone permission to listen after wake phrase."
-            _requestMicPermissionEvent.tryEmit(Unit)
+            voiceCoordinator.showBanner("Grant Microphone permission to listen after wake phrase.")
             return
         }
-        wakeEventBus.showWakePopup("Hey Sara detected — listening...")
-        if (uiState.value.behaviorSettings.geminiLiveEnabled) {
-            if (geminiLiveClient.connectionState.value == LiveConnectionState.DISCONNECTED ||
-                geminiLiveClient.connectionState.value == LiveConnectionState.ERROR
-            ) {
-                startGeminiLiveSession()
-            }
-        } else {
-            startVoiceListening()
-        }
+        voiceCoordinator.wakeUpFromSleep(phrase)
     }
 
     fun dismissWakePopup() {
         wakeEventBus.dismissWakePopup()
-        endConversationSession()
+        voiceCoordinator.endConversationSession()
     }
 
-    private fun startGeminiLiveSession() {
-        _statusBanner.value = null
-        _liveUserDraft.value = ""
-        _liveSaraDraft.value = ""
-        bargeInMonitorJob?.cancel()
-        ttsEngine.stop()
-        sttEngine.cancel()
-        audioCaptureCoordinator.release(AudioCaptureOwner.CLASSIC_STT)
+    fun enterSleepMode() {
+        voiceCoordinator.enterSleepMode(speakConfirmation = true)
+    }
 
-        viewModelScope.launch {
-            val behavior = credentialStore.behaviorSettings.first()
-            val profile = credentialStore.userProfile.first()
-            val memories = if (behavior.memoryEnabled) {
-                memoryRepository.getContextMemories(limit = 15)
-            } else {
-                emptyList()
-            }
-            val recentDbTurns = historyRepository.getRecentContextTurns(limit = 8)
-                .map { ChatTurn(isUser = it.isUser, text = it.text) }
-
-            geminiLiveClient.startSession(
-                userProfile = profile,
-                memories = memories,
-                recentHistory = recentDbTurns
-            )
-        }
+    fun wakeUpFromSleep() {
+        voiceCoordinator.wakeUpFromSleep("manual tap")
     }
 
     fun startVoiceListening() {
-        if (!sttEngine.isRecognitionAvailable()) {
-            val msg = "Speech recognition service is unavailable on this device. You can use text input below."
-            _statusBanner.value = msg
-            appendErrorMessage(msg)
-            return
-        }
-        if (!audioCaptureCoordinator.acquire(AudioCaptureOwner.CLASSIC_STT)) {
-            _statusBanner.value = "Microphone is busy with another session."
-            return
-        }
-        _statusBanner.value = null
-        consecutiveSilentTimeouts = 0
-        autoRestartAllowed = true
-        lastAutoResumeFromVoice = true
-        _classicStatus.value = AssistantStatus.LISTENING
-        sttEngine.startListening(uiState.value.userProfile.sttLocaleTag())
+        voiceCoordinator.startVoiceListening()
     }
 
     fun interruptSpeechAndListen() {
-        bargeInMonitorJob?.cancel()
-        bargeInMonitorJob = null
-        audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-
-        if (uiState.value.behaviorSettings.geminiLiveEnabled &&
-            geminiLiveClient.connectionState.value != LiveConnectionState.DISCONNECTED
-        ) {
-            geminiLiveClient.interruptCurrentPlayback()
-            return
-        }
-
-        ttsEngine.stop()
-        if (hasMicPermission()) {
-            startVoiceListening()
-        } else {
-            _classicStatus.value = AssistantStatus.IDLE
-        }
+        voiceCoordinator.interruptSpeechAndListen()
     }
 
     fun endConversationSession() {
-        autoRestartAllowed = false
-        lastAutoResumeFromVoice = false
-        activeTurnJob?.cancel()
-        activeTurnJob = null
-        bargeInMonitorJob?.cancel()
-        bargeInMonitorJob = null
-        audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-        audioCaptureCoordinator.release(AudioCaptureOwner.CLASSIC_STT)
-        geminiLiveClient.stopSession()
-        ttsEngine.stop()
-        sttEngine.cancel()
-        wakeEventBus.dismissWakePopup()
-        _classicStatus.value = AssistantStatus.IDLE
+        voiceCoordinator.endConversationSession()
     }
 
     fun stopSpeakingAndListening() {
-        endConversationSession()
+        voiceCoordinator.endConversationSession()
+    }
+
+    fun onAppBackgrounded() {
+        voiceCoordinator.onAppBackgrounded()
+    }
+
+    fun onAppForegrounded() {
+        voiceCoordinator.onAppForegrounded()
     }
 
     fun startNewConversationSession() {
-        endConversationSession()
-        activeSessionId = UUID.randomUUID().toString()
-        sessionInitializedInDb = false
-        _messages.value = listOf(
-            ConversationMessage(
-                isUser = false,
-                text = "New conversation started. I'm listening whenever you're ready!"
-            )
-        )
+        voiceCoordinator.startNewConversationSession()
     }
 
     fun sendTextCommand(text: String) {
-        val clean = text.trim()
-        if (clean.isEmpty()) return
-
-        // If Gemini Live WebSocket is currently open & active, send directly through the Live session
-        val liveState = geminiLiveClient.connectionState.value
-        if (uiState.value.behaviorSettings.geminiLiveEnabled &&
-            (liveState == LiveConnectionState.CONNECTED ||
-                liveState == LiveConnectionState.LISTENING ||
-                liveState == LiveConnectionState.SPEAKING)
-        ) {
-            appendMessage(ConversationMessage(isUser = true, text = clean, actionTag = "LIVE TEXT"))
-            viewModelScope.launch {
-                persistTurnToHistory(isUser = true, text = clean, mode = "LIVE")
-            }
-            geminiLiveClient.sendTextTurn(clean)
-            return
-        }
-
-        lastAutoResumeFromVoice = false
-        autoRestartAllowed = false
-        handleUserUtterance(clean, fromVoice = false)
-    }
-
-    private fun handleUserUtterance(utterance: String, fromVoice: Boolean) {
-        activeTurnJob?.cancel()
-        activeTurnJob = viewModelScope.launch {
-            _statusBanner.value = null
-            appendMessage(ConversationMessage(isUser = true, text = utterance))
-            persistTurnToHistory(isUser = true, text = utterance, mode = "CLASSIC")
-
-            val pending = _pendingConfirmation.value
-            if (pending != null) {
-                if (CommandParser.isAffirmativeConfirmation(utterance)) {
-                    _pendingConfirmation.value = null
-                    executePendingAction(pending, resumeListening = fromVoice)
-                    return@launch
-                } else if (CommandParser.isNegativeConfirmation(utterance)) {
-                    _pendingConfirmation.value = null
-                    val cancelReply = "Theek hai, action cancel kar diya."
-                    appendMessage(ConversationMessage(isUser = false, text = cancelReply, actionTag = "CANCELLED"))
-                    persistTurnToHistory(isUser = false, text = cancelReply, mode = "CLASSIC")
-                    speakAndMaybeResume(cancelReply, resumeListening = fromVoice)
-                    return@launch
-                } else {
-                    _pendingConfirmation.value = null
-                }
-            }
-
-            if (!networkMonitor.isOnline()) {
-                val netErr = "Internet connection check kijiye."
-                _classicStatus.value = AssistantStatus.ERROR
-                _statusBanner.value = netErr
-                appendErrorMessage(netErr)
-                return@launch
-            }
-
-            _classicStatus.value = AssistantStatus.THINKING
-
-            val behavior = uiState.value.behaviorSettings
-            val profile = uiState.value.userProfile
-            val memories = if (behavior.memoryEnabled) {
-                memoryRepository.getContextMemories(limit = 15)
-            } else {
-                emptyList()
-            }
-
-            val history = _messages.value
-                .filterNot { it.isError }
-                .takeLast(12)
-                .map { ChatTurn(isUser = it.isUser, text = it.text) }
-
-            val result = geminiClient.generateAssistantResponse(
-                userMessage = utterance,
-                history = history,
-                memories = memories,
-                userProfile = profile,
-                liveCallMode = behavior.liveCallModeEnabled
-            )
-
-            when (result) {
-                is GeminiResult.Failure -> {
-                    _classicStatus.value = AssistantStatus.ERROR
-                    _statusBanner.value = "${result.userFacingMessage} (${result.diagnostic})"
-                    appendErrorMessage(result.userFacingMessage)
-                    if (behavior.autoSpeakResponses && uiState.value.elevenLabsCredentials.isConfigured) {
-                        speakAndMaybeResume(result.userFacingMessage, resumeListening = false)
-                    }
-                }
-                is GeminiResult.Success -> {
-                    val cmd = result.command
-                    if (behavior.memoryEnabled) {
-                        saveMemoriesFromTurn(utterance, cmd)
-                    }
-
-                    val execution = actionRouter.route(
-                        command = cmd,
-                        confirmBeforeExternalAction = behavior.confirmBeforeExternalAction,
-                        onNavigateToRoute = { route -> _navigationEvents.tryEmit(route) }
-                    )
-
-                    var launchedExternalActivity = false
-                    var replyToSpeak = cmd.spokenReply
-                    var actionStatus: String? = null
-
-                    when (execution) {
-                        is ActionExecutionResult.Executed -> {
-                            actionStatus = execution.statusMessage
-                            launchedExternalActivity = cmd.category in setOf(
-                                ActionCategory.OPEN_APP,
-                                ActionCategory.PLAY_YOUTUBE,
-                                ActionCategory.CALL_CONTACT,
-                                ActionCategory.SEND_MESSAGE
-                            )
-                        }
-                        is ActionExecutionResult.NeedsConfirmation -> {
-                            _pendingConfirmation.value = execution.pending
-                            replyToSpeak = execution.pending.summary
-                            actionStatus = "Awaiting confirmation"
-                        }
-                        is ActionExecutionResult.NeedsPermission -> {
-                            _pendingPermissionRequest.value = PermissionRequestPrompt(
-                                permission = execution.permission,
-                                rationale = execution.rationale,
-                                retryCommand = execution.retryCommand
-                            )
-                            actionStatus = "Permission required"
-                        }
-                        is ActionExecutionResult.Unavailable -> {
-                            actionStatus = execution.reason
-                            if (cmd.category != ActionCategory.CHAT) {
-                                replyToSpeak = "${cmd.spokenReply} (${execution.reason})"
-                            }
-                        }
-                        ActionExecutionResult.NoOp -> Unit
-                    }
-
-                    appendMessage(
-                        ConversationMessage(
-                            isUser = false,
-                            text = replyToSpeak,
-                            actionTag = if (cmd.category != ActionCategory.CHAT) cmd.category.name else null,
-                            actionStatus = actionStatus
-                        )
-                    )
-                    persistTurnToHistory(isUser = false, text = replyToSpeak, mode = "CLASSIC")
-
-                    val shouldResume = (fromVoice || lastAutoResumeFromVoice) &&
-                        !launchedExternalActivity &&
-                        (behavior.continuousConversationEnabled || behavior.liveCallModeEnabled || execution is ActionExecutionResult.NeedsConfirmation)
-
-                    speakAndMaybeResume(replyToSpeak, resumeListening = shouldResume)
-                }
-            }
-        }
-    }
-
-    private suspend fun persistTurnToHistory(isUser: Boolean, text: String, mode: String) {
-        if (!sessionInitializedInDb) {
-            sessionInitializedInDb = true
-            historyRepository.ensureSession(
-                sessionId = activeSessionId,
-                initialTitle = if (isUser) text else "Conversation with Sara",
-                mode = mode
-            )
-        }
-        historyRepository.appendTurn(
-            sessionId = activeSessionId,
-            isUser = isUser,
-            text = text,
-            sourceMode = mode,
-            sessionTitleHint = if (isUser) text else null
-        )
+        voiceCoordinator.sendTextCommand(text)
     }
 
     fun confirmPendingAction() {
-        val pending = _pendingConfirmation.value ?: return
-        _pendingConfirmation.value = null
-        viewModelScope.launch {
-            executePendingAction(pending, resumeListening = false)
-        }
+        voiceCoordinator.confirmPendingAction()
     }
 
     fun cancelPendingAction() {
-        if (_pendingConfirmation.value == null) return
-        _pendingConfirmation.value = null
-        appendMessage(
-            ConversationMessage(
-                isUser = false,
-                text = "Action cancelled.",
-                actionTag = "CANCELLED"
-            )
-        )
-    }
-
-    private suspend fun executePendingAction(pending: PendingConfirmation, resumeListening: Boolean) {
-        val result = actionRouter.executeConfirmedAction(pending)
-        when (result) {
-            is ActionExecutionResult.Executed -> {
-                val msg = result.statusMessage
-                appendMessage(
-                    ConversationMessage(
-                        isUser = false,
-                        text = msg,
-                        actionTag = pending.command.category.name,
-                        actionStatus = "Executed"
-                    )
-                )
-                speakAndMaybeResume(msg, resumeListening = false)
-            }
-            is ActionExecutionResult.Unavailable -> {
-                appendErrorMessage(result.reason)
-                speakAndMaybeResume(result.reason, resumeListening = resumeListening)
-            }
-            else -> Unit
-        }
+        voiceCoordinator.cancelPendingAction()
     }
 
     fun onDynamicPermissionResult(granted: Boolean) {
-        val req = _pendingPermissionRequest.value ?: return
-        _pendingPermissionRequest.value = null
-        if (granted && req.retryCommand != null) {
-            viewModelScope.launch {
-                val behavior = uiState.value.behaviorSettings
-                val execution = actionRouter.route(
-                    command = req.retryCommand,
-                    confirmBeforeExternalAction = behavior.confirmBeforeExternalAction,
-                    onNavigateToRoute = { route -> _navigationEvents.tryEmit(route) }
-                )
-                if (execution is ActionExecutionResult.NeedsConfirmation) {
-                    _pendingConfirmation.value = execution.pending
-                    appendMessage(
-                        ConversationMessage(
-                            isUser = false,
-                            text = execution.pending.summary,
-                            actionTag = req.retryCommand.category.name,
-                            actionStatus = "Awaiting confirmation"
-                        )
-                    )
-                    speakAndMaybeResume(execution.pending.summary, resumeListening = true)
-                } else if (execution is ActionExecutionResult.Executed) {
-                    appendMessage(
-                        ConversationMessage(
-                            isUser = false,
-                            text = execution.statusMessage,
-                            actionTag = req.retryCommand.category.name
-                        )
-                    )
-                }
-            }
-        } else if (!granted) {
-            val deniedMsg = "Permission denied: ${req.rationale}"
-            _statusBanner.value = deniedMsg
-            appendErrorMessage(deniedMsg)
-        }
+        voiceCoordinator.onDynamicPermissionResult(granted)
     }
 
     fun dismissPermissionPrompt() {
-        _pendingPermissionRequest.value = null
+        voiceCoordinator.dismissPermissionPrompt()
     }
 
-    private suspend fun speakAndMaybeResume(text: String, resumeListening: Boolean) {
-        val behavior = uiState.value.behaviorSettings
-        if (!behavior.autoSpeakResponses) {
-            _classicStatus.value = AssistantStatus.IDLE
-            if (resumeListening && autoRestartAllowed &&
-                audioCaptureCoordinator.acquire(AudioCaptureOwner.CLASSIC_STT)
-            ) {
-                delay(300L)
-                _classicStatus.value = AssistantStatus.LISTENING
-                sttEngine.startListening(uiState.value.userProfile.sttLocaleTag())
-            }
-            return
-        }
-
-        _classicStatus.value = AssistantStatus.SPEAKING
-        if (behavior.bargeInEnabled && AcousticEchoCanceler.isAvailable() && hasMicPermission()) {
-            startAecBargeInMonitor()
-        }
-
-        val ttsResult = ttsEngine.speak(text, liveCallMode = behavior.liveCallModeEnabled)
-        bargeInMonitorJob?.cancel()
-        bargeInMonitorJob = null
-        audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-
-        when (ttsResult) {
-            is TtsResult.Completed -> {
-                if (resumeListening && autoRestartAllowed &&
-                    (behavior.continuousConversationEnabled || behavior.liveCallModeEnabled || _pendingConfirmation.value != null)
-                ) {
-                    delay(350L)
-                    if (autoRestartAllowed && audioCaptureCoordinator.acquire(AudioCaptureOwner.CLASSIC_STT)) {
-                        _classicStatus.value = AssistantStatus.LISTENING
-                        sttEngine.startListening(uiState.value.userProfile.sttLocaleTag())
-                    } else {
-                        _classicStatus.value = AssistantStatus.IDLE
-                    }
-                } else {
-                    _classicStatus.value = AssistantStatus.IDLE
-                }
-            }
-            is TtsResult.Stopped -> {
-                _classicStatus.value = AssistantStatus.IDLE
-            }
-            is TtsResult.Error -> {
-                _statusBanner.value = "${ttsResult.userMessage} (${ttsResult.diagnostic})"
-                if (resumeListening && autoRestartAllowed &&
-                    (behavior.continuousConversationEnabled || behavior.liveCallModeEnabled)
-                ) {
-                    delay(350L)
-                    if (autoRestartAllowed && audioCaptureCoordinator.acquire(AudioCaptureOwner.CLASSIC_STT)) {
-                        _classicStatus.value = AssistantStatus.LISTENING
-                        sttEngine.startListening(uiState.value.userProfile.sttLocaleTag())
-                    } else {
-                        _classicStatus.value = AssistantStatus.IDLE
-                    }
-                } else {
-                    _classicStatus.value = AssistantStatus.IDLE
-                }
-            }
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startAecBargeInMonitor() {
-        bargeInMonitorJob?.cancel()
-        if (!audioCaptureCoordinator.acquire(AudioCaptureOwner.BARGE_IN_MONITOR)) return
-        bargeInMonitorJob = viewModelScope.launch(Dispatchers.IO) {
-            val minBuf = AudioRecord.getMinBufferSize(
-                16000,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            if (minBuf <= 0) {
-                audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-                return@launch
-            }
-            val recorder = runCatching {
-                AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    16000,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    maxOf(minBuf * 2, 2560)
-                )
-            }.getOrNull()
-            if (recorder == null || recorder.state != AudioRecord.STATE_INITIALIZED) {
-                runCatching { recorder?.release() }
-                audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-                return@launch
-            }
-            val aec = runCatching { AcousticEchoCanceler.create(recorder.audioSessionId)?.apply { enabled = true } }.getOrNull()
-            val vad = VoiceActivityDetector(
-                speechStartRatio = 3.2,
-                minSpeechRms = 1150.0,
-                startConfirmFrames = 4,
-                endSilenceHangoverFrames = 12
-            )
-            val buf = ByteArray(1280)
-            try {
-                recorder.startRecording()
-                delay(350L) // Ignore speaker startup transient
-                while (isActive && ttsEngine.isSpeaking.value) {
-                    val read = recorder.read(buf, 0, buf.size)
-                    if (read > 0) {
-                        val (event, _) = vad.processFrame(buf, read)
-                        if (event == VadEvent.SPEECH_STARTED) {
-                            withContext(Dispatchers.Main) {
-                                interruptSpeechAndListen()
-                            }
-                            break
-                        }
-                    }
-                }
-            } finally {
-                runCatching { aec?.release() }
-                runCatching {
-                    if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
-                    recorder.release()
-                }
-                audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-            }
-        }
-    }
-
-    private suspend fun saveMemoriesFromTurn(userText: String, cmd: AssistantCommand) {
-        if (cmd.memoryNote.isNotBlank()) {
-            memoryRepository.saveMemory(
-                category = cmd.memoryCategory,
-                content = cmd.memoryNote,
-                source = "gemini_extract"
-            )
-        }
-        val compactUser = userText.trim()
-        if (compactUser.length > 6 && cmd.category != ActionCategory.CHAT) {
-            memoryRepository.saveMemory(
-                category = MemoryCategory.TASK,
-                content = "Requested ${cmd.category.name}: $compactUser",
-                source = "command"
-            )
-        }
+    fun dismissBanner() {
+        voiceCoordinator.dismissBanner()
     }
 
     fun analyzeImageWithGemini(bitmap: Bitmap, prompt: String, speakResult: Boolean = true) {
@@ -1316,7 +592,7 @@ class SaraViewModel(
                 is GeminiResult.Success -> {
                     val reply = res.command.spokenReply
                     _visionState.value = VisionAnalysisUiState.Success(prompt, reply)
-                    appendMessage(
+                    voiceCoordinator.appendMessage(
                         ConversationMessage(
                             isUser = false,
                             text = reply,
@@ -1325,7 +601,7 @@ class SaraViewModel(
                         )
                     )
                     if (speakResult && uiState.value.behaviorSettings.autoSpeakResponses) {
-                        speakAndMaybeResume(reply, resumeListening = false)
+                        voiceCoordinator.speakAndMaybeResume(reply, resumeListening = false)
                     }
                 }
                 is GeminiResult.Failure -> {
@@ -1401,7 +677,7 @@ class SaraViewModel(
     fun saveUserProfile(name: String, preferredLanguage: String, preferencesNote: String) {
         viewModelScope.launch {
             credentialStore.saveUserProfile(name, preferredLanguage, preferencesNote)
-            _statusBanner.value = null
+            voiceCoordinator.clearStatusBanner()
         }
     }
 
@@ -1445,12 +721,26 @@ class SaraViewModel(
         viewModelScope.launch { credentialStore.updateWakeSensitivity(sensitivity) }
     }
 
+    fun setBackgroundAssistantEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            credentialStore.updateBackgroundAssistantEnabled(enabled)
+            if (!enabled && wakeEventBus.powerMode.value == SaraPowerMode.OFF) {
+                WakeDetectionService.stop(appContext)
+            }
+        }
+    }
+
     fun setWakeUpDetectionEnabled(enabled: Boolean, hasMicPermission: Boolean = hasMicPermission()) {
         if (!enabled) {
             pendingEnableWakeAfterMicGrant = false
             viewModelScope.launch { credentialStore.updateWakeUpDetectionEnabled(false) }
-            WakeDetectionService.stop(appContext)
-            wakeEventBus.updateServiceState(WakeServiceState.DISABLED, null)
+            if (wakeEventBus.powerMode.value == SaraPowerMode.SLEEP ||
+                wakeEventBus.powerMode.value == SaraPowerMode.OFF
+            ) {
+                WakeDetectionService.stop(appContext)
+                wakeEventBus.updatePowerMode(SaraPowerMode.OFF)
+                wakeEventBus.updateServiceState(WakeServiceState.DISABLED, null)
+            }
             return
         }
         if (!hasMicPermission) {
@@ -1459,19 +749,23 @@ class SaraViewModel(
                 WakeServiceState.PERMISSION_MISSING,
                 "Grant Microphone permission to enable Wake Up Detection."
             )
-            _requestMicPermissionEvent.tryEmit(Unit)
+            voiceCoordinator.onMicButtonPressed(false)
             return
         }
 
         onRefreshVoskInspection()
         val inspection = voskInspectionFlow.value
         viewModelScope.launch { credentialStore.updateWakeUpDetectionEnabled(true) }
-        if (!inspection.isReady) {
+        if (!inspection.isReady && !sttEngine.isRecognitionAvailable()) {
             wakeEventBus.updateServiceState(WakeServiceState.MODEL_MISSING, inspection.diagnosticMessage)
-            _statusBanner.value = inspection.diagnosticMessage
+            voiceCoordinator.showBanner(inspection.diagnosticMessage)
             return
         }
-        WakeDetectionService.start(appContext)
+        if (wakeEventBus.powerMode.value == SaraPowerMode.ONLINE) {
+            WakeDetectionService.startOnline(appContext)
+        } else {
+            WakeDetectionService.startSleep(appContext)
+        }
     }
 
     fun importVoskModelTreeUri(treeUri: Uri) {
@@ -1481,13 +775,18 @@ class SaraViewModel(
                 onRefreshVoskInspection()
                 result.fold(
                     onSuccess = { info ->
-                        _statusBanner.value = info.diagnosticMessage
-                        if (uiState.value.behaviorSettings.wakeUpDetectionEnabled && hasMicPermission() && info.isReady) {
-                            WakeDetectionService.start(appContext)
+                        voiceCoordinator.showBanner(info.diagnosticMessage)
+                        if (uiState.value.behaviorSettings.wakeUpDetectionEnabled &&
+                            hasMicPermission() &&
+                            info.isReady
+                        ) {
+                            WakeDetectionService.startSleep(appContext)
                         }
                     },
                     onFailure = { err ->
-                        _statusBanner.value = err.localizedMessage ?: "Failed to import Vosk model folder."
+                        voiceCoordinator.showBanner(
+                            err.localizedMessage ?: "Failed to import Vosk model folder."
+                        )
                     }
                 )
             }
@@ -1495,20 +794,16 @@ class SaraViewModel(
     }
 
     fun clearImportedVoskModel() {
-        WakeDetectionService.stop(appContext)
         VoskModelInspector.clearImportedModel(appContext)
         onRefreshVoskInspection()
-        if (uiState.value.behaviorSettings.wakeUpDetectionEnabled) {
-            wakeEventBus.updateServiceState(
-                WakeServiceState.MODEL_MISSING,
-                voskInspectionFlow.value.diagnosticMessage
-            )
+        if (uiState.value.behaviorSettings.wakeUpDetectionEnabled && hasMicPermission()) {
+            WakeDetectionService.startSleep(appContext)
         }
     }
 
     fun recordNextWakeEnrollmentSample() {
         if (!hasMicPermission()) {
-            _requestMicPermissionEvent.tryEmit(Unit)
+            voiceCoordinator.onMicButtonPressed(false)
             return
         }
         wakeEnrollmentManager.recordNextSample()
@@ -1524,7 +819,7 @@ class SaraViewModel(
 
     fun startMicrophoneTest() {
         if (!hasMicPermission()) {
-            _requestMicPermissionEvent.tryEmit(Unit)
+            voiceCoordinator.onMicButtonPressed(false)
             return
         }
         microphoneTestEngine.startTest()
@@ -1559,6 +854,7 @@ class SaraViewModel(
         } else {
             true
         }
+        val canDrawOverlays = runCatching { Settings.canDrawOverlays(appContext) }.getOrDefault(false)
         return CommandPermissionStatus(
             recordAudio = granted(Manifest.permission.RECORD_AUDIO),
             readContacts = granted(Manifest.permission.READ_CONTACTS),
@@ -1566,7 +862,8 @@ class SaraViewModel(
             readPhoneState = granted(Manifest.permission.READ_PHONE_STATE),
             postNotifications = postNotif,
             camera = granted(Manifest.permission.CAMERA),
-            bluetoothConnect = btConnect
+            bluetoothConnect = btConnect,
+            canDrawOverlays = canDrawOverlays
         )
     }
 
@@ -1728,9 +1025,7 @@ class SaraViewModel(
         viewModelScope.launch {
             val prompt = "Sir, $callerName ka call hai. Answer karna hai?"
             _incomingCallSimResult.value = prompt
-            if (uiState.value.behaviorSettings.autoSpeakResponses &&
-                uiState.value.elevenLabsCredentials.isConfigured
-            ) {
+            if (uiState.value.behaviorSettings.autoSpeakResponses) {
                 ttsEngine.speak(prompt, liveCallMode = true)
             }
         }
@@ -1740,42 +1035,11 @@ class SaraViewModel(
         _incomingCallSimResult.value = incomingCallManager.evaluateVoiceAnswerDecision(affirmative)
     }
 
-    fun dismissBanner() {
-        _statusBanner.value = null
-    }
-
-    private fun appendMessage(msg: ConversationMessage) {
-        _messages.update { it + msg }
-    }
-
-    private fun appendErrorMessage(message: String) {
-        _messages.update {
-            it + ConversationMessage(isUser = false, text = message, isError = true)
-        }
-    }
-
-    private fun appendTranscriptFragment(existing: String, fragment: String): String {
-        if (fragment.isBlank()) return existing
-        if (existing.isEmpty()) return fragment.trimStart()
-        return if (existing.endsWith(" ") || fragment.startsWith(" ")) {
-            existing + fragment
-        } else {
-            "$existing$fragment"
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
         try {
-            bargeInMonitorJob?.cancel()
             microphoneTestEngine.stopTest()
             wakeEnrollmentManager.stopRecording()
-            geminiLiveClient.stopSession("ViewModel cleared")
-            ttsEngine.release()
-            sttEngine.release()
-            audioCaptureCoordinator.release(AudioCaptureOwner.CLASSIC_STT)
-            audioCaptureCoordinator.release(AudioCaptureOwner.BARGE_IN_MONITOR)
-            audioFocusManager.abandonFocus()
         } catch (_: CancellationException) {
         }
     }
@@ -1814,6 +1078,7 @@ class SaraViewModel(
     private data class WakeBundle(
         val serviceState: WakeServiceState,
         val serviceDiagnostic: String?,
+        val powerMode: SaraPowerMode,
         val voskInspection: VoskModelInspectionResult?,
         val enrollmentState: WakeEnrollmentUiState,
         val micTestState: MicTestUiState,
@@ -1850,13 +1115,12 @@ class SaraViewModel(
                 geminiLiveClient = container.geminiLiveClient,
                 ttsEngine = container.elevenLabsTtsEngine,
                 sttEngine = container.sttEngine,
-                actionRouter = container.actionRouter,
                 incomingCallManager = container.incomingCallAssistantManager,
-                audioCaptureCoordinator = container.audioCaptureCoordinator,
                 audioFocusManager = container.audioFocusManager,
                 microphoneTestEngine = container.microphoneTestEngine,
                 wakeEnrollmentManager = container.wakeEnrollmentManager,
                 wakeEventBus = container.wakeEventBus,
+                voiceCoordinator = container.voiceCoordinator,
                 voskInspectionFlow = container.voskInspection,
                 onRefreshVoskInspection = { container.refreshVoskInspection() },
                 whatsAppAutomationManager = container.whatsAppAutomationManager

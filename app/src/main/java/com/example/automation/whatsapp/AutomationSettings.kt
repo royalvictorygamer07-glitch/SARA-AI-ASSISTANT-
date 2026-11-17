@@ -35,7 +35,7 @@ data class AutomationSettings(
     val voiceAnnouncementEnabled: Boolean = false,
     val readIncomingMessagesAloud: Boolean = false,
     val replyLanguageMode: String = LANGUAGE_AUTOMATIC,
-    val aiReplyDelaySeconds: Int = 2,
+    val aiReplyDelaySeconds: Int = 0,
     val maxMessagesPerConversation: Int = 15,
     val replyToGroupChats: Boolean = false
 ) {
@@ -63,7 +63,7 @@ class AutomationSettingsStore(context: Context) {
             voiceAnnouncementEnabled = prefs[KEY_VOICE_ANNOUNCEMENT] ?: false,
             readIncomingMessagesAloud = prefs[KEY_READ_INCOMING_ALOUD] ?: false,
             replyLanguageMode = prefs[KEY_REPLY_LANGUAGE_MODE] ?: AutomationSettings.LANGUAGE_AUTOMATIC,
-            aiReplyDelaySeconds = (prefs[KEY_AI_REPLY_DELAY_SECONDS] ?: 2).coerceIn(0, 15),
+            aiReplyDelaySeconds = (prefs[KEY_AI_REPLY_DELAY_SECONDS] ?: 0).coerceIn(0, 15),
             maxMessagesPerConversation = (prefs[KEY_MAX_MESSAGES_PER_CONV] ?: 15).coerceIn(1, 100),
             replyToGroupChats = prefs[KEY_REPLY_GROUP_CHATS] ?: false
         )

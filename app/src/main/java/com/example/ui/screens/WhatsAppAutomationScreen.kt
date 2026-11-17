@@ -475,10 +475,26 @@ private fun ControlsTabContent(
                 onCheckedChange = onToggleAutomation,
                 tag = "wa_toggle_automation"
             )
+            if (!uiState.geminiCredentials.isConfigured) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = CrimsonAlert.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, CrimsonAlert.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Gemini API Key missing: Smart AI auto-replies need your Gemini API Key saved in Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = CrimsonAlert,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
+
             AutomationSwitchRow(
                 title = "Gemini AI Brain",
                 subtitle = if (uiState.geminiCredentials.isConfigured) {
-                    "Context-aware multilingual AI generation active."
+                    "Context-aware multilingual AI (${uiState.geminiCredentials.modelName}) active."
                 } else {
                     "Configure Gemini API key in Settings to enable AI replies."
                 },
@@ -552,7 +568,11 @@ private fun ControlsTabContent(
             }
 
             Text(
-                text = "AI Reply Delay: ${settings.aiReplyDelaySeconds}s (batches consecutive messages)",
+                text = if (settings.aiReplyDelaySeconds == 0) {
+                    "AI Reply Delay: Instant (0s — replies immediately)"
+                } else {
+                    "AI Reply Delay: ${settings.aiReplyDelaySeconds}s (batches consecutive messages)"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary
             )

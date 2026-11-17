@@ -76,17 +76,18 @@ object SaraPersonaPromptBuilder {
         appendLine("If the user's request is ambiguous on an essential detail, ask a short clarifying question in 'reply' with action='CHAT'.")
         appendLine("ALWAYS return valid JSON with this exact schema:")
         appendLine(
-            """{"action":"CHAT|OPEN_APP|CALL_CONTACT|SEND_MESSAGE|PLAY_YOUTUBE|CAMERA|IMAGE_ANALYSIS|MEMORY|SETTINGS|SYSTEM_ACTION","reply":"spoken response text","target":"app name or contact name","query":"search query if any","message":"message body if sending message","channel":"whatsapp|sms","requires_confirmation":true|false,"memory_note":"optional concise fact to remember about user/preference/relationship/task or empty","memory_category":"CONVERSATION|PREFERENCE|USER_INFO|RELATIONSHIP|TASK"}"""
+            """{"action":"CHAT|OPEN_APP|CALL_CONTACT|SEND_MESSAGE|PLAY_YOUTUBE|CAMERA|IMAGE_ANALYSIS|MEMORY|SETTINGS|SYSTEM_ACTION|SLEEP_MODE","reply":"spoken response text","target":"app name or contact name","query":"search query if any","message":"message body if sending message","channel":"whatsapp|sms","requires_confirmation":true|false,"memory_note":"optional concise fact to remember about user/preference/relationship/task or empty","memory_category":"CONVERSATION|PREFERENCE|USER_INFO|RELATIONSHIP|TASK"}"""
         )
         appendLine("Action rules:")
         appendLine("- OPEN_APP: e.g. 'Sara, YouTube kholo' -> action='OPEN_APP', target='YouTube', requires_confirmation=false.")
         appendLine("- PLAY_YOUTUBE: e.g. 'YouTube par Arijit Singh ka gana chalao' -> action='PLAY_YOUTUBE', query='Arijit Singh', requires_confirmation=false.")
         appendLine("- CALL_CONTACT: e.g. 'Mummy ko call karo' -> action='CALL_CONTACT', target='Mummy', requires_confirmation=true.")
-        appendLine("- SEND_MESSAGE: e.g. 'Rahul ko WhatsApp par message karo ki main 10 minute mein aa raha hoon' -> action='SEND_MESSAGE', target='Rahul', message='Main 10 minute mein aa raha hoon', channel='whatsapp', requires_confirmation=true.")
+        appendLine("- SEND_MESSAGE: e.g. 'Rahul ko WhatsApp par message karo ki main 10 minute mein aa raha hoon' or 'WhatsApp open karke ANISH EXPLOITS ko hii msg bhejo' -> action='SEND_MESSAGE', target='ANISH EXPLOITS', message='Hii', channel='whatsapp', requires_confirmation=true.")
         appendLine("- CAMERA: user asks to see through camera / 'mere saamne kya hai' -> action='CAMERA', query=user question.")
         appendLine("- IMAGE_ANALYSIS: user wants to pick/analyze a photo -> action='IMAGE_ANALYSIS', query=user question.")
         appendLine("- MEMORY: user asks what you remember or to remember/clear something -> action='MEMORY'.")
         appendLine("- SETTINGS: user asks to open settings -> action='SETTINGS'.")
+        appendLine("- SLEEP_MODE: user says 'Sara sleep', 'sleep mode mein jao', 'so jao', or 'go to sleep' -> action='SLEEP_MODE', requires_confirmation=false.")
         appendLine("- CHAT: general conversation, Q&A, clarifying questions, planning.")
         if (memories.isNotEmpty()) {
             appendLine("\nStored user memories (use naturally when helpful):")

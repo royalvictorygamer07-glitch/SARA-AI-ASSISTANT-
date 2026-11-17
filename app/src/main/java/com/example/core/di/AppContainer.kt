@@ -155,4 +155,21 @@ class AppContainer(context: Context) {
             audioCaptureCoordinator = audioCaptureCoordinator
         )
     }
+
+    val voiceCoordinator: com.example.voice.SaraVoiceCoordinator by lazy {
+        com.example.voice.SaraVoiceCoordinator(
+            context = appContext,
+            credentialStore = credentialStore,
+            networkMonitor = networkMonitor,
+            memoryRepository = memoryRepository,
+            historyRepository = conversationHistoryRepository,
+            geminiClient = geminiClient,
+            geminiLiveClient = geminiLiveClient,
+            ttsEngine = elevenLabsTtsEngine,
+            sttEngine = sttEngine,
+            actionRouter = actionRouter,
+            audioCaptureCoordinator = audioCaptureCoordinator,
+            wakeEventBus = wakeEventBus
+        )
+    }
 }

@@ -29,10 +29,45 @@ data class GeminiCredentials(
     val isConfigured: Boolean get() = apiKey.isNotBlank()
 
     companion object {
-        const val DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
-        const val DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+        const val DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+        const val FALLBACK_GEMINI_MODEL = "gemini-3.5-flash-lite"
+        const val DEFAULT_GEMINI_LIVE_MODEL = "gemini-3.8-live"
         const val DEFAULT_LIVE_VOICE = "Aoede"
         val FEMALE_LIVE_VOICES = listOf("Aoede", "Kore", "Leda", "Zephyr")
+        val STANDARD_MODEL_PRESETS = listOf(
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-4-hydrogen",
+            "gemini-4-argon"
+        )
+        val LIVE_MODEL_PRESETS = listOf(
+            "gemini-3.8-live",
+            "gemini-3.8-live-extended-thinking"
+        )
+
+        fun normalizeStandardModel(raw: String?): String {
+            val cleaned = raw.orEmpty().trim().removePrefix("models/")
+            if (cleaned.isBlank()) return DEFAULT_GEMINI_MODEL
+            val lower = cleaned.lowercase()
+            val isDeprecated = lower == "gemini-2.5-flash" ||
+                lower == "gemini-2.5-flash-lite" ||
+                lower == "gemini-2.5-pro" ||
+                lower.startsWith("gemini-2.0") ||
+                lower.startsWith("gemini-1.") ||
+                lower.startsWith("gemini-pro")
+            return if (isDeprecated) DEFAULT_GEMINI_MODEL else cleaned
+        }
+
+        fun normalizeLiveModel(raw: String?): String {
+            val cleaned = raw.orEmpty().trim().removePrefix("models/")
+            if (cleaned.isBlank()) return DEFAULT_GEMINI_LIVE_MODEL
+            val lower = cleaned.lowercase()
+            val isDeprecated = lower.contains("2.5-flash-native-audio") ||
+                lower.startsWith("gemini-2.0") ||
+                lower.startsWith("gemini-1.") ||
+                lower == "gemini-3.1-flash-live-preview"
+            return if (isDeprecated) DEFAULT_GEMINI_LIVE_MODEL else cleaned
+        }
     }
 }
 
@@ -72,6 +107,7 @@ data class AssistantBehaviorSettings(
     val autoSpeakResponses: Boolean = true,
     val bargeInEnabled: Boolean = true,
     val wakeUpDetectionEnabled: Boolean = false,
+    val backgroundAssistantEnabled: Boolean = true,
     val wakeEnrolledCount: Int = 0,
     val wakeSensitivity: Float = 0.65f
 )
@@ -112,6 +148,7 @@ class CredentialStore(context: Context) {
                 autoSpeakResponses = prefs[KEY_AUTO_SPEAK] ?: true,
                 bargeInEnabled = prefs[KEY_BARGE_IN_ENABLED] ?: true,
                 wakeUpDetectionEnabled = prefs[KEY_WAKE_UP_ENABLED] ?: false,
+                backgroundAssistantEnabled = prefs[KEY_BACKGROUND_ASSISTANT_ENABLED] ?: true,
                 wakeEnrolledCount = prefs[KEY_WAKE_ENROLLED_COUNT] ?: 0,
                 wakeSensitivity = prefs[KEY_WAKE_SENSITIVITY] ?: 0.65f
             )
@@ -133,8 +170,8 @@ class CredentialStore(context: Context) {
         liveVoiceName: String = _geminiCredentials.value.liveVoiceName
     ) {
         val cleanKey = apiKey.trim()
-        val cleanModel = modelName.trim().ifBlank { GeminiCredentials.DEFAULT_GEMINI_MODEL }
-        val cleanLiveModel = liveModelName.trim().ifBlank { GeminiCredentials.DEFAULT_GEMINI_LIVE_MODEL }
+        val cleanModel = GeminiCredentials.normalizeStandardModel(modelName)
+        val cleanLiveModel = GeminiCredentials.normalizeLiveModel(liveModelName)
         val cleanLiveVoice = liveVoiceName.trim().ifBlank { GeminiCredentials.DEFAULT_LIVE_VOICE }
         val encryptedKey = if (cleanKey.isNotEmpty()) geminiCrypto.encrypt(cleanKey) else ""
         geminiPrefs.edit()
@@ -221,6 +258,10 @@ class CredentialStore(context: Context) {
         appContext.saraAssistantPrefs.edit { it[KEY_WAKE_UP_ENABLED] = enabled }
     }
 
+    suspend fun updateBackgroundAssistantEnabled(enabled: Boolean) {
+        appContext.saraAssistantPrefs.edit { it[KEY_BACKGROUND_ASSISTANT_ENABLED] = enabled }
+    }
+
     suspend fun updateWakeEnrolledCount(count: Int) {
         appContext.saraAssistantPrefs.edit { it[KEY_WAKE_ENROLLED_COUNT] = count.coerceIn(0, 5) }
     }
@@ -232,13 +273,19 @@ class CredentialStore(context: Context) {
     private fun readGeminiCredentials(): GeminiCredentials {
         val encKey = geminiPrefs.getString(FIELD_GEMINI_API_KEY_ENC, "").orEmpty()
         val decryptedKey = if (encKey.isNotBlank()) geminiCrypto.decrypt(encKey) else ""
-        val model = geminiPrefs.getString(FIELD_GEMINI_MODEL, GeminiCredentials.DEFAULT_GEMINI_MODEL)
-            .orEmpty()
-            .ifBlank { GeminiCredentials.DEFAULT_GEMINI_MODEL }
-        val liveModel = geminiPrefs.getString(
+        val rawModel = geminiPrefs.getString(FIELD_GEMINI_MODEL, GeminiCredentials.DEFAULT_GEMINI_MODEL)
+        val model = GeminiCredentials.normalizeStandardModel(rawModel)
+        val rawLiveModel = geminiPrefs.getString(
             FIELD_GEMINI_LIVE_MODEL,
             GeminiCredentials.DEFAULT_GEMINI_LIVE_MODEL
-        ).orEmpty().ifBlank { GeminiCredentials.DEFAULT_GEMINI_LIVE_MODEL }
+        )
+        val liveModel = GeminiCredentials.normalizeLiveModel(rawLiveModel)
+        if ((rawModel != null && rawModel != model) || (rawLiveModel != null && rawLiveModel != liveModel)) {
+            geminiPrefs.edit()
+                .putString(FIELD_GEMINI_MODEL, model)
+                .putString(FIELD_GEMINI_LIVE_MODEL, liveModel)
+                .apply()
+        }
         val liveVoice = geminiPrefs.getString(
             FIELD_GEMINI_LIVE_VOICE,
             GeminiCredentials.DEFAULT_LIVE_VOICE
@@ -280,6 +327,7 @@ class CredentialStore(context: Context) {
         private val KEY_AUTO_SPEAK = booleanPreferencesKey("auto_speak")
         private val KEY_BARGE_IN_ENABLED = booleanPreferencesKey("barge_in_enabled")
         private val KEY_WAKE_UP_ENABLED = booleanPreferencesKey("wake_up_detection_enabled")
+        private val KEY_BACKGROUND_ASSISTANT_ENABLED = booleanPreferencesKey("background_assistant_enabled")
         private val KEY_WAKE_ENROLLED_COUNT = intPreferencesKey("wake_enrolled_count")
         private val KEY_WAKE_SENSITIVITY = floatPreferencesKey("wake_sensitivity")
 

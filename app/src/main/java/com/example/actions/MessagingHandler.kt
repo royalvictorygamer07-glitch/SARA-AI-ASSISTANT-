@@ -78,12 +78,8 @@ class MessagingHandler(
                 putExtra("sms_body", messageBody)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            return runCatching {
-                context.startActivity(smsIntent)
-                ActionExecutionResult.Executed("Opened SMS composer for $displayName")
-            }.getOrElse {
-                ActionExecutionResult.Unavailable("No SMS app available on this device.")
-            }
+            return launchMessageIntent(smsIntent, "Opened SMS composer for $displayName")
+                ?: ActionExecutionResult.Unavailable("No SMS app available on this device.")
         }
 
         // Order candidate packages cleanly based on whether user requested WhatsApp Business
@@ -103,11 +99,7 @@ class MessagingHandler(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             if (waIntent.resolveActivity(context.packageManager) != null) {
-                val started = runCatching {
-                    context.startActivity(waIntent)
-                    ActionExecutionResult.Executed("Prepared $appLabel message to $displayName")
-                }
-                if (started.isSuccess) return started.getOrThrow()
+                launchMessageIntent(waIntent, "Prepared $appLabel message to $displayName")?.let { return it }
             }
         }
 
@@ -120,11 +112,7 @@ class MessagingHandler(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             if (waShare.resolveActivity(context.packageManager) != null) {
-                val started = runCatching {
-                    context.startActivity(waShare)
-                    ActionExecutionResult.Executed("Opened $appLabel share sheet for $displayName")
-                }
-                if (started.isSuccess) return started.getOrThrow()
+                launchMessageIntent(waShare, "Opened $appLabel share sheet for $displayName")?.let { return it }
             }
         }
 
@@ -132,11 +120,17 @@ class MessagingHandler(
             putExtra("sms_body", messageBody)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        return runCatching {
-            context.startActivity(smsFallback)
-            ActionExecutionResult.Executed("WhatsApp/Business not installed; opened SMS for $displayName")
-        }.getOrElse {
-            ActionExecutionResult.Unavailable("WhatsApp and WhatsApp Business are not installed on this device.")
+        return launchMessageIntent(smsFallback, "WhatsApp/Business not installed; opened SMS for $displayName")
+            ?: ActionExecutionResult.Unavailable("WhatsApp and WhatsApp Business are not installed on this device.")
+    }
+
+    private fun launchMessageIntent(intent: Intent, successMessage: String): ActionExecutionResult? {
+        return when (BackgroundActivityStarter.launchActivity(context, intent, successMessage)) {
+            BackgroundActivityStarter.LaunchOutcome.LaunchedDirectly ->
+                ActionExecutionResult.Executed(successMessage)
+            BackgroundActivityStarter.LaunchOutcome.NotificationFallbackPosted ->
+                ActionExecutionResult.Executed("$successMessage (Tap notification to open)")
+            is BackgroundActivityStarter.LaunchOutcome.Failed -> null
         }
     }
 

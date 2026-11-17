@@ -53,6 +53,9 @@ class ActionRouter(
                 onNavigateToRoute("actions")
                 ActionExecutionResult.Executed("Opened SARA Action Center")
             }
+            ActionCategory.SLEEP_MODE -> {
+                ActionExecutionResult.Executed("Entering Sleep Mode — say \"Hey Sara\" to wake up")
+            }
         }
     }
 

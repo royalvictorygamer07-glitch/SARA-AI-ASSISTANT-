@@ -72,14 +72,15 @@ class CallingHandler(
             Intent(Intent.ACTION_DIAL, telUri)
         }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-        return runCatching {
-            context.startActivity(intent)
-            val mode = if (hasCallPermission) "Calling" else "Opening dialer for"
-            ActionExecutionResult.Executed("$mode $displayName ($phoneNumber)")
-        }.getOrElse { err ->
-            ActionExecutionResult.Unavailable(
-                "Unable to start call: ${err.localizedMessage ?: "no phone app"}"
-            )
+        val mode = if (hasCallPermission) "Calling" else "Opening dialer for"
+        val successMsg = "$mode $displayName ($phoneNumber)"
+        return when (val outcome = BackgroundActivityStarter.launchActivity(context, intent, successMsg)) {
+            BackgroundActivityStarter.LaunchOutcome.LaunchedDirectly ->
+                ActionExecutionResult.Executed(successMsg)
+            BackgroundActivityStarter.LaunchOutcome.NotificationFallbackPosted ->
+                ActionExecutionResult.Executed("$successMsg (Tap notification to open dialer)")
+            is BackgroundActivityStarter.LaunchOutcome.Failed ->
+                ActionExecutionResult.Unavailable("Unable to start call: ${outcome.reason}")
         }
     }
 }

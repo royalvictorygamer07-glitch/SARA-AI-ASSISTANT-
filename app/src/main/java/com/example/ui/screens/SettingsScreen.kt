@@ -92,6 +92,8 @@ fun SettingsScreen(
     onToggleConfirmBeforeAction: (Boolean) -> Unit,
     onToggleMemoryEnabled: (Boolean) -> Unit,
     onToggleWakeUpDetection: (Boolean) -> Unit,
+    onToggleBackgroundAssistant: (Boolean) -> Unit,
+    onOpenOverlayPermissionSettings: () -> Unit,
     onImportVoskModelClick: () -> Unit,
     onClearVoskModelClick: () -> Unit,
     onRecordEnrollmentSample: () -> Unit,
@@ -147,10 +149,12 @@ fun SettingsScreen(
         if (geminiApiKey.isEmpty() && uiState.geminiCredentials.apiKey.isNotEmpty()) {
             geminiApiKey = uiState.geminiCredentials.apiKey
         }
-        if (geminiModel.isBlank()) {
+        val normalizedStd = GeminiCredentials.normalizeStandardModel(geminiModel)
+        if (geminiModel.isBlank() || normalizedStd != geminiModel) {
             geminiModel = uiState.geminiCredentials.modelName
         }
-        if (geminiLiveModel.isBlank()) {
+        val normalizedLive = GeminiCredentials.normalizeLiveModel(geminiLiveModel)
+        if (geminiLiveModel.isBlank() || normalizedLive != geminiLiveModel) {
             geminiLiveModel = uiState.geminiCredentials.liveModelName
         }
         if (geminiLiveVoice.isBlank()) {
@@ -415,10 +419,7 @@ fun SettingsScreen(
                     )
 
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(
-                            GeminiCredentials.DEFAULT_GEMINI_LIVE_MODEL,
-                            "gemini-2.0-flash-live-001"
-                        ).forEach { preset ->
+                        GeminiCredentials.LIVE_MODEL_PRESETS.forEach { preset ->
                             FilterChip(
                                 selected = geminiLiveModel == preset,
                                 onClick = { geminiLiveModel = preset },
@@ -457,11 +458,7 @@ fun SettingsScreen(
                     )
 
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(
-                            GeminiCredentials.DEFAULT_GEMINI_MODEL,
-                            "gemini-2.5-pro",
-                            "gemini-2.5-flash-lite"
-                        ).forEach { preset ->
+                        GeminiCredentials.STANDARD_MODEL_PRESETS.forEach { preset ->
                             FilterChip(
                                 selected = geminiModel == preset,
                                 onClick = { geminiModel = preset },
@@ -760,6 +757,8 @@ fun SettingsScreen(
             WakeUpDetectionCard(
                 uiState = uiState,
                 onToggleWakeUpDetection = onToggleWakeUpDetection,
+                onToggleBackgroundAssistant = onToggleBackgroundAssistant,
+                onOpenOverlayPermissionSettings = onOpenOverlayPermissionSettings,
                 onImportVoskModelClick = onImportVoskModelClick,
                 onClearVoskModelClick = onClearVoskModelClick,
                 onRecordEnrollmentSample = onRecordEnrollmentSample,

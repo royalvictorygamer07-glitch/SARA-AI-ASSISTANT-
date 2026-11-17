@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import java.util.concurrent.ConcurrentHashMap
 
@@ -50,6 +51,10 @@ class WhatsAppReplySender(
     }
 
     fun markNoReplyActionAvailable(notificationKey: String, conversationKey: String) {
+        val existing = activeTargetsByConversation[conversationKey]
+        if (existing != null && existing.notificationKey != notificationKey) {
+            return
+        }
         activeTargetsByConversation.remove(conversationKey)
         notificationKeyToConversation[notificationKey] = conversationKey
         unsupportedNotifications[conversationKey] = System.currentTimeMillis()
@@ -106,6 +111,9 @@ class WhatsAppReplySender(
             }
             val replyIntent = Intent().apply {
                 RemoteInput.addResultsToIntent(target.remoteInputs, this, bundle)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    RemoteInput.setResultsSource(this, RemoteInput.SOURCE_FREE_FORM_INPUT)
+                }
             }
             dispatcher.dispatch(context.applicationContext, target.actionIntent, replyIntent)
             ReplySendOutcome.Sent

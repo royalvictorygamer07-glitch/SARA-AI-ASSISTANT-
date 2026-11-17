@@ -76,6 +76,7 @@ fun SaraCoreVisualizer(
                     AssistantStatus.SPEAKING -> 4500
                     AssistantStatus.CONNECTED,
                     AssistantStatus.LISTENING -> 6000
+                    AssistantStatus.SLEEPING -> 20000
                     AssistantStatus.ERROR,
                     AssistantStatus.IDLE -> 14000
                 },
@@ -97,6 +98,7 @@ fun SaraCoreVisualizer(
                     AssistantStatus.SPEAKING -> 3400
                     AssistantStatus.CONNECTED,
                     AssistantStatus.LISTENING -> 4800
+                    AssistantStatus.SLEEPING -> 16000
                     AssistantStatus.ERROR,
                     AssistantStatus.IDLE -> 11000
                 },
@@ -125,6 +127,7 @@ fun SaraCoreVisualizer(
     val primaryCoreColor by animateColorAsState(
         targetValue = when {
             status == AssistantStatus.ERROR -> CrimsonAlert
+            status == AssistantStatus.SLEEPING -> SapphirePulse.copy(alpha = 0.65f)
             status == AssistantStatus.CONNECTING ||
                 status == AssistantStatus.RECONNECTING ||
                 status == AssistantStatus.THINKING -> AmberThinking
@@ -141,6 +144,7 @@ fun SaraCoreVisualizer(
     val secondaryCoreColor by animateColorAsState(
         targetValue = when (status) {
             AssistantStatus.ERROR -> CrimsonAlert.copy(alpha = 0.7f)
+            AssistantStatus.SLEEPING -> DeepIndigoCore
             AssistantStatus.CONNECTING,
             AssistantStatus.RECONNECTING,
             AssistantStatus.THINKING -> Color(0xFFFF6D00)
@@ -154,6 +158,7 @@ fun SaraCoreVisualizer(
     )
 
     val statusLabel = when {
+        status == AssistantStatus.SLEEPING -> "SLEEP MODE"
         status == AssistantStatus.CONNECTING -> "CONNECTING"
         status == AssistantStatus.RECONNECTING -> "RECONNECTING"
         status == AssistantStatus.CONNECTED -> "CONNECTED"
@@ -181,7 +186,10 @@ fun SaraCoreVisualizer(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val maxRadius = size.minDimension / 2f
-            val dynamicPulse = if (status == AssistantStatus.IDLE || status == AssistantStatus.ERROR) {
+            val dynamicPulse = if (status == AssistantStatus.IDLE ||
+                status == AssistantStatus.ERROR ||
+                status == AssistantStatus.SLEEPING
+            ) {
                 breathingScale
             } else {
                 0.96f + smoothAmp * 0.14f
@@ -223,6 +231,7 @@ fun SaraCoreVisualizer(
                 val harmonic = sin(angleRad * 5f + outerRotation * 0.05f) * 0.5f + 0.5f
                 val barLen = when (status) {
                     AssistantStatus.IDLE,
+                    AssistantStatus.SLEEPING,
                     AssistantStatus.ERROR -> 4.dp.toPx() + harmonic * 4.dp.toPx()
                     AssistantStatus.CONNECTING,
                     AssistantStatus.RECONNECTING,
@@ -324,6 +333,7 @@ fun VoiceWaveformStrip(
             AssistantStatus.CONNECTED -> EmeraldActive
             AssistantStatus.LISTENING -> CyanPlasma
             AssistantStatus.SPEAKING -> SapphirePulse
+            AssistantStatus.SLEEPING -> SapphirePulse.copy(alpha = 0.45f)
             AssistantStatus.CONNECTING,
             AssistantStatus.RECONNECTING,
             AssistantStatus.THINKING -> AmberThinking
@@ -352,6 +362,7 @@ fun VoiceWaveformStrip(
                 val osc = sin(phase + i * 0.45f) * 0.5f + 0.5f
                 val activeBoost = when (status) {
                     AssistantStatus.IDLE,
+                    AssistantStatus.SLEEPING,
                     AssistantStatus.ERROR -> 0.16f
                     AssistantStatus.CONNECTING,
                     AssistantStatus.RECONNECTING,
